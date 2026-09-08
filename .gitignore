@@ -1,0 +1,33 @@
+# Build outputs
+c_firmware/build/
+build/
+*.obj
+*.o
+*.elf
+*.map
+*.dis
+
+# Backups and archives
+backup_*/
+*.zip
+*.tar.gz
+
+# Python cache
+__pycache__/
+*.py[cod]
+
+# IDE & System files
+.DS_Store
+Thumbs.db
+*.swp
+*.bak
+.idea/
+.vscode/*
+!.vscode/settings.json
+!.vscode/tasks.json
+!.vscode/launch.json
+!.vscode/extensions.json
+c_firmware/.vscode/*
+!c_firmware/.vscode/settings.json
+!c_firmware/.vscode/tasks.json
+!c_firmware/.vscode/c_cpp_properties.json

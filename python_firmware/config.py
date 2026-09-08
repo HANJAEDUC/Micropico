@@ -1,0 +1,19 @@
+# W5500-EVB-Pico2 설정 파일
+
+# 1. 핀 구성 (W5500-EVB-Pico2 온보드 고정 핀)
+SPI_BUS = 0
+MISO_PIN = 16
+CS_PIN = 17
+SCK_PIN = 18
+MOSI_PIN = 19
+RST_PIN = 20
+INT_PIN = 21
+
+# 2. 이더넷 네트워크 설정 (PC 유선 랜카드 192.168.10.100 과 맞춤)
+STATIC_IP = "192.168.10.177"
+SUBNET_MASK = "255.255.255.0"
+GATEWAY_IP = "192.168.10.1"
+MAC_ADDRESS = "00:08:DC:23:50:0A"
+
+# 3. 웹 서버 포트
+HTTP_PORT = 80

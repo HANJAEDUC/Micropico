@@ -1,0 +1,11 @@
+{
+  "micropico.autoConnect": false,
+  "python.analysis.extraPaths": [
+    "./"
+  ],
+  "python.languageServer": "Default",
+  "files.associations": {
+    "*.py": "python"
+  },
+  "cmake.sourceDirectory": "C:/__WORK/__VPE/_________Project/__Antigravity/Micropico/c_firmware"
+}

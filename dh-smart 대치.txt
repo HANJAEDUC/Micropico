@@ -1,0 +1,6 @@
+기존 대치 모델 
+PIC32MZ1024EFH064- I or E/PT
+LAN8740AI-EN-ND
+
+RP2350A - RS232 기존 하네스
+RP2350A - FW ISP 기존 하네스와 별도 (4핀-5핀)

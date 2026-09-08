@@ -1,0 +1,39 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "🚀 [Quick RUN] Web Server 실행 (RAM 직행)",
+      "type": "shell",
+      "command": "mpremote connect auto run webserver.py",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "problemMatcher": []
+    },
+    {
+      "label": "📡 [Quick RUN] SPI 하드웨어 칩 감지 테스트 (1초 컷)",
+      "type": "shell",
+      "command": "mpremote connect auto run test_w5500_spi.py",
+      "problemMatcher": []
+    },
+    {
+      "label": "💾 [FLASH Write] 전체 모듈 Pico 2 메모리로 영구 이관",
+      "type": "shell",
+      "command": "mpremote connect auto cp config.py w5500_driver.py webserver.py main.py :",
+      "problemMatcher": []
+    },
+    {
+      "label": "📁 Pico 2 플래시 메모리 파일 목록 확인",
+      "type": "shell",
+      "command": "mpremote connect auto ls",
+      "problemMatcher": []
+    },
+    {
+      "label": "🔄 [RESTART] Pico 2 소프트 리셋 및 main.py 재실행",
+      "type": "shell",
+      "command": "mpremote connect auto soft-reset",
+      "problemMatcher": []
+    }
+  ]
+}
