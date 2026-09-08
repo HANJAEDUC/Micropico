@@ -48,12 +48,20 @@
   .badge-online { background: rgba(34, 197, 94, 0.15); color: #4ade80; border: 1px solid rgba(74, 222, 128, 0.3); padding: 4px 10px; border-radius: 20px; font-size: 11px; font-weight: 700; display: inline-flex; align-items: center; gap: 6px; }
   .badge-online::before { content: ""; width: 7px; height: 7px; background: #4ade80; border-radius: 50%; display: inline-block; box-shadow: 0 0 8px #4ade80; }
   
-  .ip-link { color: #38bdf8; font-weight: 700; text-decoration: none; font-family: monospace; font-size: 14px; }
+  .ip-link { color: #38bdf8; font-weight: 700; text-decoration: none; font-family: monospace; font-size: 14px; transition: color 0.2s; }
   .ip-link:hover { text-decoration: underline; color: #7dd3fc; }
+  .ip-link.disabled { color: #94a3b8; pointer-events: none; text-decoration: none; cursor: default; }
   
   .ver-tag { background: #0b132b; color: #facc15; padding: 4px 8px; border-radius: 6px; font-family: monospace; font-weight: 700; border: 1px solid #3a506b; }
-  .action-btn { background: #334155; color: #f8fafc; border: 1px solid #475569; padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }
-  .action-btn:hover { background: #0284c7; border-color: #38bdf8; color: #fff; }
+  
+  /* Action button states */
+  .action-btn { padding: 7px 14px; border-radius: 8px; font-size: 12px; font-weight: 700; text-decoration: none; display: inline-flex; align-items: center; gap: 6px; transition: all 0.25s ease; }
+  .action-btn.active { background: linear-gradient(135deg, #0284c7, #0369a1); border: 1px solid #38bdf8; color: #ffffff; cursor: pointer; box-shadow: 0 3px 10px rgba(2,132,199,0.35); }
+  .action-btn.active:hover { background: linear-gradient(135deg, #0369a1, #075985); transform: translateY(-1px); box-shadow: 0 5px 14px rgba(56,189,248,0.45); }
+  .action-btn.disabled { background: #1e293b; color: #64748b; border: 1px solid #334155; cursor: not-allowed; pointer-events: none; opacity: 0.75; }
+  
+  .notice-box { background: rgba(14, 165, 233, 0.08); border: 1px solid rgba(56, 189, 248, 0.25); border-radius: 8px; padding: 8px 14px; font-size: 12px; color: #94a3b8; display: inline-flex; align-items: center; gap: 8px; }
+  .notice-box strong { color: #38bdf8; }
   
   #progress-bar { width: 100%; height: 4px; background: #0b132b; position: fixed; top: 0; left: 0; display: none; z-index: 9999; }
   #progress-bar .fill { height: 100%; background: linear-gradient(90deg, #0284c7, #38bdf8, #4ade80); width: 0%; transition: width 0.2s ease; }
@@ -96,7 +104,12 @@
 <div class="card-main">
   <div class="card-header">
     <h2>📡 연결된 Pico 2 디바이스 목록</h2>
-    <span style="font-size:12px; color:#94a3b8;" id="lastScanTime">마지막 업데이트: 없음</span>
+    <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
+      <div class="notice-box" id="connNotice">
+        <span>💡 <strong>소켓 보호 안내:</strong> 스캔 중에는 W5500 단일 소켓 점유로 웹 UI 접속이 대기되며, <strong>스캔 완료/중지 즉시 활성화</strong>됩니다.</span>
+      </div>
+      <span style="font-size:12px; color:#94a3b8;" id="lastScanTime">마지막 업데이트: 없음</span>
+    </div>
   </div>
   
   <div class="table-wrapper">
@@ -133,6 +146,7 @@ let scanStartTime = 0;
 function renderTable(devices) {
   const tbody = document.getElementById('deviceTableBody');
   const subnet = document.getElementById('subnetInput').value.trim().replace(/\.$/, '');
+  const canConnect = !isScanning; // 스캔 중이 아닐 때만 웹 UI 연결 버튼 활성화
   
   if (!devices || devices.length === 0) {
     tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding: 40px; color:#ef4444;">
@@ -142,14 +156,22 @@ function renderTable(devices) {
   } else {
     let html = '';
     devices.forEach((dev, idx) => {
+      const ipLinkHtml = canConnect 
+        ? `<a href="http://${dev.ip}" target="_blank" class="ip-link">http://${dev.ip}</a>`
+        : `<span class="ip-link disabled" title="스캔 진행 중에는 W5500 단일 소켓 점유로 접속이 대기됩니다.">http://${dev.ip}</span>`;
+        
+      const actionBtnHtml = canConnect
+        ? `<a href="http://${dev.ip}" target="_blank" class="action-btn active">🌐 웹 UI 바로가기</a>`
+        : `<span class="action-btn disabled" title="스캔 진행 중에는 웹 접속이 일시 제한됩니다. 스캔 완료 또는 [스캔 중지] 후 활성화됩니다.">⏳ 스캔 완료 후 활성화</span>`;
+
       html += `<tr>
         <td>${idx + 1}</td>
         <td><span class="badge-online">ONLINE</span></td>
-        <td><a href="http://${dev.ip}" target="_blank" class="ip-link">http://${dev.ip}</a></td>
+        <td>${ipLinkHtml}</td>
         <td><span class="ver-tag">${dev.version}</span></td>
         <td>${dev.temp}</td>
         <td style="color:#94a3b8;">${dev.latency}</td>
-        <td><a href="http://${dev.ip}" target="_blank" class="action-btn">🌐 웹 UI 바로가기</a></td>
+        <td>${actionBtnHtml}</td>
       </tr>`;
     });
     tbody.innerHTML = html;
@@ -227,7 +249,7 @@ function stopScan() {
   const statTime = document.getElementById('statTime');
   const elapsed = ((performance.now() - scanStartTime) / 1000).toFixed(2);
   
-  statStatus.innerText = '⏹️ 스캔 중지됨';
+  statStatus.innerText = '⏹️ 스캔 중지됨 (웹 접속 가능)';
   statStatus.style.color = '#ef4444';
   statTime.innerText = elapsed + ' 초';
   
@@ -235,6 +257,8 @@ function stopScan() {
   document.getElementById('lastScanTime').innerText = '중지 시각: ' + now.toLocaleTimeString();
   
   updateUiForScanning(false);
+  // 스캔 중단 즉시 W5500 소켓이 유휴 상태가 되므로 발견된 기기들의 웹 UI 버튼 활성화!
+  renderTable(foundDevices);
 }
 
 async function startScan() {
@@ -263,7 +287,7 @@ async function startScan() {
   const tbody = document.getElementById('deviceTableBody');
   tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding: 40px; color:#38bdf8;">
     <div style="font-size:14px; font-weight:600; margin-bottom:6px;">대역 [${subnet}.1 ~ 254] 실시간 스캔 중...</div>
-    <span style="font-size:12px; color:#94a3b8;">잠시만 기다려주세요. 감지된 디바이스가 즉시 표시됩니다.</span>
+    <span style="font-size:12px; color:#94a3b8;">잠시만 기다려주세요. 감지된 디바이스가 순차적으로 표시됩니다.</span>
   </td></tr>`;
   
   scanStartTime = performance.now();
@@ -354,7 +378,7 @@ async function startScan() {
   statTotal.innerText = foundDevices.length + ' 대';
   
   if (foundDevices.length > 0) {
-    statStatus.innerText = '✅ 스캔 완료';
+    statStatus.innerText = '✅ 스캔 완료 (웹 접속 가능)';
     statStatus.style.color = '#4ade80';
     renderTable(foundDevices);
   } else {
@@ -367,9 +391,11 @@ async function startScan() {
   document.getElementById('lastScanTime').innerText = '마지막 스캔: ' + now.toLocaleTimeString();
   
   updateUiForScanning(false);
+  // 스캔 완료 후 소켓이 유휴 상태가 되었으므로 웹 접속 버튼 즉시 활성화
+  renderTable(foundDevices);
 }
 
-// Window load: Do NOT run scan automatically. Ready for user Start click.
+// Window load: Ready for user Start click
 window.onload = function() {
   // Standby state
 };
