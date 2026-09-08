@@ -15,20 +15,27 @@
   .title-group h1 { font-size: 20px; font-weight: 700; color: #ffffff; }
   .title-group p { font-size: 12px; color: #94a3b8; margin-top: 2px; }
   
-  .controls { display: flex; gap: 12px; align-items: center; flex-wrap: wrap; }
-  .input-subnet { background: #0b132b; color: #38bdf8; border: 1px solid #3a506b; padding: 10px 14px; border-radius: 10px; font-weight: 700; font-size: 13px; outline: none; width: 140px; text-align: center; }
+  .controls { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; }
+  .input-subnet { background: #0b132b; color: #38bdf8; border: 1px solid #3a506b; padding: 10px 14px; border-radius: 10px; font-weight: 700; font-size: 13px; outline: none; width: 140px; text-align: center; transition: border-color 0.2s; }
+  .input-subnet:focus { border-color: #38bdf8; box-shadow: 0 0 0 2px rgba(56,189,248,0.2); }
   
-  .btn { background: #0284c7; color: #fff; border: none; padding: 10px 20px; border-radius: 10px; font-weight: 700; font-size: 13px; cursor: pointer; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 8px; box-shadow: 0 4px 12px rgba(2,132,199,0.3); }
-  .btn:hover { background: #0369a1; transform: translateY(-1px); }
-  .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+  .btn { border: none; padding: 10px 18px; border-radius: 10px; font-weight: 700; font-size: 13px; cursor: pointer; transition: all 0.2s ease; display: inline-flex; align-items: center; gap: 8px; text-decoration: none; }
+  
+  .btn-start { background: linear-gradient(135deg, #0284c7, #0369a1); color: #fff; box-shadow: 0 4px 12px rgba(2,132,199,0.3); }
+  .btn-start:hover:not(:disabled) { background: linear-gradient(135deg, #0369a1, #075985); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(2,132,199,0.4); }
+  
+  .btn-stop { background: linear-gradient(135deg, #ef4444, #dc2626); color: #fff; box-shadow: 0 4px 12px rgba(239,68,68,0.3); }
+  .btn-stop:hover:not(:disabled) { background: linear-gradient(135deg, #dc2626, #b91c1c); transform: translateY(-1px); box-shadow: 0 6px 16px rgba(239,68,68,0.4); }
+  
+  .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none !important; box-shadow: none !important; }
   
   .stats-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(220px, 1fr)); gap: 16px; margin-bottom: 24px; }
   .stat-card { background: #1c2541; padding: 18px 24px; border-radius: 14px; border: 1px solid #3a506b; box-shadow: 0 4px 15px rgba(0,0,0,0.2); }
   .stat-card .label { font-size: 12px; color: #94a3b8; font-weight: 600; text-transform: uppercase; letter-spacing: 0.5px; }
-  .stat-card .value { font-size: 28px; font-weight: 900; color: #38bdf8; margin-top: 6px; }
+  .stat-card .value { font-size: 26px; font-weight: 900; color: #38bdf8; margin-top: 6px; }
   
   .card-main { background: #1c2541; border-radius: 16px; border: 1px solid #3a506b; padding: 24px; box-shadow: 0 10px 25px rgba(0,0,0,0.3); }
-  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; }
+  .card-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 18px; flex-wrap: wrap; gap: 10px; }
   .card-header h2 { font-size: 16px; font-weight: 700; color: #cbd5e1; }
   
   .table-wrapper { overflow-x: auto; border-radius: 12px; border: 1px solid #3a506b; }
@@ -45,11 +52,11 @@
   .ip-link:hover { text-decoration: underline; color: #7dd3fc; }
   
   .ver-tag { background: #0b132b; color: #facc15; padding: 4px 8px; border-radius: 6px; font-family: monospace; font-weight: 700; border: 1px solid #3a506b; }
-  .action-btn { background: #334155; color: #f8fafc; border: 1px solid #475569; padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; margin-right: 6px; }
+  .action-btn { background: #334155; color: #f8fafc; border: 1px solid #475569; padding: 6px 12px; border-radius: 8px; font-size: 12px; font-weight: 600; cursor: pointer; text-decoration: none; display: inline-block; }
   .action-btn:hover { background: #0284c7; border-color: #38bdf8; color: #fff; }
   
-  #progress-bar { width: 100%; height: 4px; background: #0b132b; position: fixed; top: 0; left: 0; display: none; }
-  #progress-bar .fill { height: 100%; background: linear-gradient(90deg, #0284c7, #38bdf8, #4ade80); width: 0%; transition: width 0.3s ease; }
+  #progress-bar { width: 100%; height: 4px; background: #0b132b; position: fixed; top: 0; left: 0; display: none; z-index: 9999; }
+  #progress-bar .fill { height: 100%; background: linear-gradient(90deg, #0284c7, #38bdf8, #4ade80); width: 0%; transition: width 0.2s ease; }
 </style>
 </head>
 <body>
@@ -64,9 +71,10 @@
     </div>
   </div>
   <div class="controls">
-    <label style="font-size:12px; color:#94a3b8;">대역 설정:</label>
-    <input type="text" id="subnetInput" class="input-subnet" value="192.168.10">
-    <button onclick="runHtmlScan()" id="scanBtn" class="btn">🚀 네트워크 고속 스캔 시작</button>
+    <label for="subnetInput" style="font-size:12px; color:#94a3b8;">대역 설정:</label>
+    <input type="text" id="subnetInput" class="input-subnet" value="192.168.10" placeholder="192.168.10" onkeydown="if(event.key==='Enter') startScan();">
+    <button id="startBtn" onclick="startScan()" class="btn btn-start">▶️ 스캔 시작 (Start)</button>
+    <button id="stopBtn" onclick="stopScan()" class="btn btn-stop" disabled>⏹️ 스캔 중지 (Stop)</button>
   </div>
 </div>
 
@@ -77,7 +85,7 @@
   </div>
   <div class="stat-card">
     <div class="label">스캔 상태</div>
-    <div class="value" style="color:#4ade80;" id="statStatus">대기 중</div>
+    <div class="value" style="color:#94a3b8;" id="statStatus">대기 중 (Ready)</div>
   </div>
   <div class="stat-card">
     <div class="label">스캔 소요 시간</div>
@@ -87,7 +95,7 @@
 
 <div class="card-main">
   <div class="card-header">
-    <h2>📡 연결된 Pico 2 디바이스 목록 (HTML 스캐너)</h2>
+    <h2>📡 연결된 Pico 2 디바이스 목록</h2>
     <span style="font-size:12px; color:#94a3b8;" id="lastScanTime">마지막 업데이트: 없음</span>
   </div>
   
@@ -106,8 +114,9 @@
       </thead>
       <tbody id="deviceTableBody">
         <tr>
-          <td colspan="7" style="text-align:center; padding: 40px; color:#94a3b8;">
-            [ 🚀 네트워크 고속 스캔 시작 ] 버튼을 누르시면 연결된 Pico 2 보드를 파이썬 서버 없이 브라우저가 직접 검색합니다.
+          <td colspan="7" style="text-align:center; padding: 48px 20px; color:#94a3b8;">
+            <div style="font-size:15px; font-weight:600; margin-bottom:8px; color:#cbd5e1;">대기 중입니다.</div>
+            상단의 <strong>[ ▶️ 스캔 시작 (Start) ]</strong> 버튼을 누르면 네트워크 내 Pico 2 보드를 실시간으로 검색합니다.
           </td>
         </tr>
       </tbody>
@@ -116,14 +125,23 @@
 </div>
 
 <script>
-function renderTable(foundDevices) {
+let isScanning = false;
+const activeAbortControllers = new Set();
+let foundDevices = [];
+let scanStartTime = 0;
+
+function renderTable(devices) {
   const tbody = document.getElementById('deviceTableBody');
   const subnet = document.getElementById('subnetInput').value.trim().replace(/\.$/, '');
-  if (!foundDevices || foundDevices.length === 0) {
-    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding: 40px; color:#ef4444;">⚠️ 대역 [${subnet}.1 ~ 254] 에서 Pico 2 보드를 찾지 못했습니다.<br><span style="font-size:12px; color:#94a3b8;">상단 대역 설정에 본인 네트워크 IP 대역(예: 192.168.0 또는 192.168.1)을 입력하고 다시 스캔해 보세요.</span></td></tr>`;
+  
+  if (!devices || devices.length === 0) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding: 40px; color:#ef4444;">
+      ⚠️ 대역 [${subnet}.1 ~ 254] 에서 Pico 2 보드를 찾지 못했습니다.<br>
+      <span style="font-size:12px; color:#94a3b8;">상단 대역 설정에 본인 네트워크 IP 대역(예: 192.168.0 또는 192.168.1)을 입력하고 다시 시도해 보세요.</span>
+    </td></tr>`;
   } else {
     let html = '';
-    foundDevices.forEach((dev, idx) => {
+    devices.forEach((dev, idx) => {
       html += `<tr>
         <td>${idx + 1}</td>
         <td><span class="badge-online">ONLINE</span></td>
@@ -139,16 +157,21 @@ function renderTable(foundDevices) {
 }
 
 async function scanIpAddress(ip) {
+  if (!isScanning) return null;
+  
   const t0 = performance.now();
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 600);
+  activeAbortControllers.add(controller);
+  
+  const timeoutId = setTimeout(() => controller.abort(), 650);
   
   try {
-    const response = await fetch(`http://${ip}/api/status`, {
+    const response = await fetch(`http://${ip}/api/status?t=${Date.now()}`, {
       method: 'GET',
       signal: controller.signal
     });
     clearTimeout(timeoutId);
+    activeAbortControllers.delete(controller);
     
     if (response.ok) {
       const t1 = performance.now();
@@ -156,58 +179,137 @@ async function scanIpAddress(ip) {
       const data = await response.json();
       return {
         ip: ip,
-        version: "V0.099+",
-        temp: (data.cpu_temp ? data.cpu_temp.toFixed(1) : "32.0") + " °C",
+        version: data.version || "V0.212+",
+        temp: (data.cpu_temp !== undefined ? Number(data.cpu_temp).toFixed(1) : "32.0") + " °C",
         latency: latency + " ms",
         status: "ONLINE"
       };
     }
   } catch (err) {
     clearTimeout(timeoutId);
+    activeAbortControllers.delete(controller);
   }
   return null;
 }
 
-async function runHtmlScan() {
-  const btn = document.getElementById('scanBtn');
+function updateUiForScanning(scanning) {
+  const startBtn = document.getElementById('startBtn');
+  const stopBtn = document.getElementById('stopBtn');
+  const subnetInput = document.getElementById('subnetInput');
   const pBar = document.getElementById('progress-bar');
+  
+  if (scanning) {
+    startBtn.disabled = true;
+    stopBtn.disabled = false;
+    subnetInput.disabled = true;
+    pBar.style.display = 'block';
+  } else {
+    startBtn.disabled = false;
+    stopBtn.disabled = true;
+    subnetInput.disabled = false;
+    setTimeout(() => {
+      pBar.style.display = 'none';
+    }, 400);
+  }
+}
+
+function stopScan() {
+  if (!isScanning) return;
+  isScanning = false;
+  
+  // Abort all in-flight fetch requests immediately
+  activeAbortControllers.forEach(controller => {
+    try { controller.abort(); } catch(e) {}
+  });
+  activeAbortControllers.clear();
+  
+  const statStatus = document.getElementById('statStatus');
+  const statTime = document.getElementById('statTime');
+  const elapsed = ((performance.now() - scanStartTime) / 1000).toFixed(2);
+  
+  statStatus.innerText = '⏹️ 스캔 중지됨';
+  statStatus.style.color = '#ef4444';
+  statTime.innerText = elapsed + ' 초';
+  
+  const now = new Date();
+  document.getElementById('lastScanTime').innerText = '중지 시각: ' + now.toLocaleTimeString();
+  
+  updateUiForScanning(false);
+}
+
+async function startScan() {
+  if (isScanning) return;
+  
+  const subnet = document.getElementById('subnetInput').value.trim().replace(/\.$/, '');
+  if (!subnet) {
+    alert('검색할 IP 서브넷 대역을 입력해주세요! (예: 192.168.10)');
+    return;
+  }
+  
+  isScanning = true;
+  updateUiForScanning(true);
+  
   const pFill = document.getElementById('progress-fill');
   const statStatus = document.getElementById('statStatus');
-  const subnet = document.getElementById('subnetInput').value.trim().replace(/\.$/, '');
+  const statTotal = document.getElementById('statTotal');
+  const statTime = document.getElementById('statTime');
   
-  btn.disabled = true;
-  btn.innerText = '⏳ 스캔 진행 중...';
-  pBar.style.display = 'block';
-  pFill.style.width = '10%';
-  statStatus.innerText = '스캔 중...';
+  pFill.style.width = '5%';
+  statStatus.innerText = '스캔 진행 중...';
   statStatus.style.color = '#facc15';
+  statTotal.innerText = '0 대';
+  statTime.innerText = '0.00 초';
   
-  const startTime = performance.now();
-  const foundDevices = [];
+  const tbody = document.getElementById('deviceTableBody');
+  tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding: 40px; color:#38bdf8;">
+    <div style="font-size:14px; font-weight:600; margin-bottom:6px;">대역 [${subnet}.1 ~ 254] 실시간 스캔 중...</div>
+    <span style="font-size:12px; color:#94a3b8;">잠시만 기다려주세요. 감지된 디바이스가 즉시 표시됩니다.</span>
+  </td></tr>`;
+  
+  scanStartTime = performance.now();
+  foundDevices = [];
   const foundSet = new Set();
-
-  // Step 1: Scan Priority Known IP (.177 and 100-110) FIRST for 10ms Instant Detection!
+  
+  // Timer interval for real-time elapsed time display
+  const timeTicker = setInterval(() => {
+    if (!isScanning) {
+      clearInterval(timeTicker);
+      return;
+    }
+    const curElapsed = ((performance.now() - scanStartTime) / 1000).toFixed(2);
+    statTime.innerText = curElapsed + ' 초';
+  }, 100);
+  
+  // Step 1: Scan Priority Known IPs (.177 and .100 ~ .115) first
   const priorityIps = [`${subnet}.177`];
-  for (let p = 100; p <= 110; p++) priorityIps.push(`${subnet}.${p}`);
-
+  for (let p = 100; p <= 115; p++) {
+    priorityIps.push(`${subnet}.${p}`);
+  }
+  
   const prioResults = await Promise.all(priorityIps.map(ip => scanIpAddress(ip)));
+  if (!isScanning) {
+    clearInterval(timeTicker);
+    return;
+  }
+  
   prioResults.forEach(res => {
     if (res && !foundSet.has(res.ip)) {
       foundSet.add(res.ip);
       foundDevices.push(res);
     }
   });
-
+  
   if (foundDevices.length > 0) {
     renderTable(foundDevices);
-    document.getElementById('statTotal').innerText = foundDevices.length + ' 대';
-    statStatus.innerText = '🟢 보드 감지됨';
-    statStatus.style.color = '#4ade80';
+    statTotal.innerText = foundDevices.length + ' 대';
   }
-
-  // Step 2: Staggered scan for remaining IPs 1..254 in small 8-host batches
-  const batchSize = 8;
+  pFill.style.width = '20%';
+  
+  // Step 2: Scan all IPs 1..254 in small concurrent batches
+  const batchSize = 10;
   for (let i = 1; i <= 254; i += batchSize) {
+    if (!isScanning) break;
+    
     const promises = [];
     for (let j = i; j < i + batchSize && j <= 254; j++) {
       const ip = `${subnet}.${j}`;
@@ -216,40 +318,60 @@ async function runHtmlScan() {
       }
     }
     
-    pFill.style.width = Math.round((i / 254) * 100) + '%';
+    const pct = Math.min(95, Math.round(20 + (i / 254) * 75));
+    pFill.style.width = pct + '%';
+    
     const results = await Promise.all(promises);
+    if (!isScanning) break;
+    
+    let hasNew = false;
     results.forEach(res => {
       if (res && !foundSet.has(res.ip)) {
         foundSet.add(res.ip);
         foundDevices.push(res);
-        renderTable(foundDevices);
-        document.getElementById('statTotal').innerText = foundDevices.length + ' 대';
+        hasNew = true;
       }
     });
-    await new Promise(r => setTimeout(r, 12));
+    
+    if (hasNew) {
+      renderTable(foundDevices);
+      statTotal.innerText = foundDevices.length + ' 대';
+    }
+    
+    await new Promise(r => setTimeout(r, 15));
   }
   
-  const endTime = performance.now();
-  const scanDuration = ((endTime - startTime) / 1000).toFixed(2);
+  clearInterval(timeTicker);
   
+  // If stopped by user during loop
+  if (!isScanning) return;
+  
+  isScanning = false;
   pFill.style.width = '100%';
-  setTimeout(() => pBar.style.display = 'none', 300);
   
-  document.getElementById('statTotal').innerText = foundDevices.length + ' 대';
-  document.getElementById('statTime').innerText = scanDuration + ' 초';
-  statStatus.innerText = foundDevices.length > 0 ? '✅ 스캔 완료' : '⚠️ 검색 없음';
-  statStatus.style.color = foundDevices.length > 0 ? '#4ade80' : '#ef4444';
+  const finalDuration = ((performance.now() - scanStartTime) / 1000).toFixed(2);
+  statTime.innerText = finalDuration + ' 초';
+  statTotal.innerText = foundDevices.length + ' 대';
+  
+  if (foundDevices.length > 0) {
+    statStatus.innerText = '✅ 스캔 완료';
+    statStatus.style.color = '#4ade80';
+    renderTable(foundDevices);
+  } else {
+    statStatus.innerText = '⚠️ 검색 없음';
+    statStatus.style.color = '#ef4444';
+    renderTable([]);
+  }
   
   const now = new Date();
   document.getElementById('lastScanTime').innerText = '마지막 스캔: ' + now.toLocaleTimeString();
-  renderTable(foundDevices);
   
-  btn.disabled = false;
-  btn.innerText = '🚀 네트워크 고속 스캔 시작';
+  updateUiForScanning(false);
 }
 
+// Window load: Do NOT run scan automatically. Ready for user Start click.
 window.onload = function() {
-  runHtmlScan();
+  // Standby state
 };
 </script>
 </body>
