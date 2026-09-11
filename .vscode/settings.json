@@ -7,5 +7,6 @@
   "files.associations": {
     "*.py": "python"
   },
-  "cmake.sourceDirectory": "C:/__WORK/__VPE/_________Project/__Antigravity/Micropico/c_firmware"
+  "cmake.sourceDirectory": "C:/__WORK/__VPE/_________Project/__Antigravity/Micropico/c_firmware",
+  "C_Cpp.default.compileCommands": "${workspaceFolder}/c_firmware/build/compile_commands.json"
 }

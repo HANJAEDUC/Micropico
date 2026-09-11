@@ -1,5 +1,6 @@
 #include "dhcp_client.h"
 #include "w5500_driver.h"
+#include "w6300_driver.h"
 #include "config.h"
 #include "pico/stdlib.h"
 #include "pico/unique_id.h"
@@ -121,6 +122,7 @@ static void send_dhcp_request(uint8_t sn, const uint8_t mac[6], uint32_t xid, co
 bool w5500_dhcp_run(uint8_t assigned_ip[4], uint8_t assigned_sn[4], uint8_t assigned_gw[4], const uint8_t mac[6], uint32_t timeout_ms) {
     uint8_t sn = 2; // Use Socket 2 for DHCP Client
     uint32_t xid = get_dhcp_xid(mac);
+    assigned_sn[0] = 255; assigned_sn[1] = 255; assigned_sn[2] = 255; assigned_sn[3] = 0;
 
     // Temp 0.0.0.0 IP configuration for DHCP discovery
     const uint8_t zero_ip[4] = {0, 0, 0, 0};
@@ -218,5 +220,166 @@ bool w5500_dhcp_run(uint8_t assigned_ip[4], uint8_t assigned_sn[4], uint8_t assi
     }
 
     w5500_close_socket(sn);
+    return got_ack;
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// W6300 DHCP Client – same protocol logic as w5500_dhcp_run, W6300 driver APIs
+// ─────────────────────────────────────────────────────────────────────────────
+
+static void w6300_send_dhcp_discover(uint8_t sn, const uint8_t mac[6], uint32_t xid) {
+    dhcp_pkt_t pkt;
+    memset(&pkt, 0, sizeof(pkt));
+
+    pkt.op = 1; // BOOTREQUEST
+    pkt.htype = 1; // Ethernet
+    pkt.hlen = 6;
+    pkt.xid = __builtin_bswap32(xid);
+    pkt.flags = __builtin_bswap16(0x8000); // Broadcast flag
+    memcpy(pkt.chaddr, mac, 6);
+    pkt.magic_cookie = __builtin_bswap32(DHCP_MAGIC_COOKIE);
+
+    uint8_t *opt = pkt.options;
+    *opt++ = 53; *opt++ = 1; *opt++ = DHCP_DISCOVER;
+    *opt++ = 61; *opt++ = 7; *opt++ = 1; memcpy(opt, mac, 6); opt += 6;
+    const char *hostname = "Pico2-DisplayHub";
+    uint8_t hlen = (uint8_t)strlen(hostname);
+    *opt++ = 12; *opt++ = hlen; memcpy(opt, hostname, hlen); opt += hlen;
+    *opt++ = 55; *opt++ = 3; *opt++ = 1; *opt++ = 3; *opt++ = 6;
+    *opt++ = 255;
+
+    uint16_t pkt_len = sizeof(dhcp_pkt_t) - sizeof(pkt.options) + (opt - pkt.options);
+    const uint8_t broadcast_ip[4] = {255, 255, 255, 255};
+    w6300_send_udp_packet(sn, broadcast_ip, DHCP_SERVER_PORT, (const uint8_t*)&pkt, pkt_len);
+}
+
+static void w6300_send_dhcp_request(uint8_t sn, const uint8_t mac[6], uint32_t xid, const uint8_t requested_ip[4], const uint8_t server_ip[4]) {
+    dhcp_pkt_t pkt;
+    memset(&pkt, 0, sizeof(pkt));
+
+    pkt.op = 1;
+    pkt.htype = 1;
+    pkt.hlen = 6;
+    pkt.xid = __builtin_bswap32(xid);
+    pkt.flags = __builtin_bswap16(0x8000);
+    memcpy(pkt.chaddr, mac, 6);
+    pkt.magic_cookie = __builtin_bswap32(DHCP_MAGIC_COOKIE);
+
+    uint8_t *opt = pkt.options;
+    *opt++ = 53; *opt++ = 1; *opt++ = DHCP_REQUEST;
+    *opt++ = 61; *opt++ = 7; *opt++ = 1; memcpy(opt, mac, 6); opt += 6;
+    const char *hostname = "Pico2-DisplayHub";
+    uint8_t hlen = (uint8_t)strlen(hostname);
+    *opt++ = 12; *opt++ = hlen; memcpy(opt, hostname, hlen); opt += hlen;
+    *opt++ = 50; *opt++ = 4; memcpy(opt, requested_ip, 4); opt += 4;
+    if (server_ip[0] != 0) {
+        *opt++ = 54; *opt++ = 4; memcpy(opt, server_ip, 4); opt += 4;
+    }
+    *opt++ = 55; *opt++ = 3; *opt++ = 1; *opt++ = 3; *opt++ = 6;
+    *opt++ = 255;
+
+    uint16_t pkt_len = sizeof(dhcp_pkt_t) - sizeof(pkt.options) + (opt - pkt.options);
+    const uint8_t broadcast_ip[4] = {255, 255, 255, 255};
+    w6300_send_udp_packet(sn, broadcast_ip, DHCP_SERVER_PORT, (const uint8_t*)&pkt, pkt_len);
+}
+
+bool w6300_dhcp_run(uint8_t assigned_ip[4], uint8_t assigned_sn[4], uint8_t assigned_gw[4], const uint8_t mac[6], uint32_t timeout_ms) {
+    uint8_t sn = 2; // Use Socket 2 for DHCP Client
+    uint32_t xid = get_dhcp_xid(mac);
+    assigned_sn[0] = 255; assigned_sn[1] = 255; assigned_sn[2] = 255; assigned_sn[3] = 0;
+
+    // Temp 0.0.0.0 IP configuration for DHCP discovery
+    const uint8_t zero_ip[4] = {0, 0, 0, 0};
+    w6300_setup_network(zero_ip, zero_ip, zero_ip, mac);
+    w6300_open_udp_socket(sn, DHCP_CLIENT_PORT);
+
+    printf("📡 [W6300 DHCP] 공유기에 IP 자동 할당 요청 중 (DISCOVER)...\n");
+    w6300_send_dhcp_discover(sn, mac, xid);
+
+    uint8_t offered_ip[4] = {0};
+    uint8_t dhcp_server_ip[4] = {0};
+    uint8_t rx_buf[576];
+    uint8_t remote_ip[4];
+    uint16_t remote_port;
+
+    bool got_offer = false;
+    uint64_t start_t = time_us_64();
+    uint64_t timeout_us = (uint64_t)timeout_ms * 1000ULL;
+    uint64_t last_discover_t = start_t;
+
+    // Step 1: Wait for DHCP OFFER with periodic retry (every 1.0s)
+    while (time_us_64() - start_t < timeout_us) {
+        if (!got_offer && (time_us_64() - last_discover_t > 1000000ULL)) {
+            w6300_send_dhcp_discover(sn, mac, xid);
+            last_discover_t = time_us_64();
+        }
+        uint16_t n = w6300_recv_udp_packet(sn, remote_ip, &remote_port, rx_buf, sizeof(rx_buf));
+        if (n >= 240) {
+            dhcp_pkt_t *pkt = (dhcp_pkt_t*)rx_buf;
+            if (pkt->op == 2 && __builtin_bswap32(pkt->xid) == xid && pkt->magic_cookie == __builtin_bswap32(DHCP_MAGIC_COOKIE)) {
+                uint8_t msg_type = 0;
+                uint8_t *opt = pkt->options;
+                uint8_t *opt_end = rx_buf + n;
+                while (opt < opt_end && *opt != 255) {
+                    uint8_t code = *opt++;
+                    if (code == 0) continue;
+                    uint8_t len = *opt++;
+                    if (code == 53 && len >= 1) msg_type = opt[0];
+                    else if (code == 1  && len >= 4) memcpy(assigned_sn, opt, 4);
+                    else if (code == 3  && len >= 4) memcpy(assigned_gw, opt, 4);
+                    else if (code == 54 && len >= 4) memcpy(dhcp_server_ip, opt, 4);
+                    opt += len;
+                }
+                if (msg_type == DHCP_OFFER) {
+                    memcpy(offered_ip, pkt->yiaddr, 4);
+                    got_offer = true;
+                    printf("📩 [W6300 DHCP OFFER] 제안 IP: %d.%d.%d.%d\n", offered_ip[0], offered_ip[1], offered_ip[2], offered_ip[3]);
+                    break;
+                }
+            }
+        }
+        sleep_ms(10);
+    }
+
+    if (!got_offer) {
+        w6300_close_socket(sn);
+        return false; // Timeout -> Fallback to static IP
+    }
+
+    // Step 2: Send DHCP REQUEST
+    w6300_send_dhcp_request(sn, mac, xid, offered_ip, dhcp_server_ip);
+
+    // Step 3: Wait for DHCP ACK
+    start_t = time_us_64();
+    bool got_ack = false;
+    while (time_us_64() - start_t < 1500000ULL) {
+        uint16_t n = w6300_recv_udp_packet(sn, remote_ip, &remote_port, rx_buf, sizeof(rx_buf));
+        if (n >= 240) {
+            dhcp_pkt_t *pkt = (dhcp_pkt_t*)rx_buf;
+            if (pkt->op == 2 && __builtin_bswap32(pkt->xid) == xid && pkt->magic_cookie == __builtin_bswap32(DHCP_MAGIC_COOKIE)) {
+                uint8_t msg_type = 0;
+                uint8_t *opt = pkt->options;
+                uint8_t *opt_end = rx_buf + n;
+                while (opt < opt_end && *opt != 255) {
+                    uint8_t code = *opt++;
+                    if (code == 0) continue;
+                    uint8_t len = *opt++;
+                    if (code == 53 && len >= 1) msg_type = opt[0];
+                    else if (code == 1  && len >= 4) memcpy(assigned_sn, opt, 4);
+                    else if (code == 3  && len >= 4) memcpy(assigned_gw, opt, 4);
+                    opt += len;
+                }
+                if (msg_type == DHCP_ACK) {
+                    memcpy(assigned_ip, pkt->yiaddr, 4);
+                    got_ack = true;
+                    printf("🎉 [W6300 DHCP ACK] 최종 IP: %d.%d.%d.%d\n", assigned_ip[0], assigned_ip[1], assigned_ip[2], assigned_ip[3]);
+                    break;
+                }
+            }
+        }
+        sleep_ms(10);
+    }
+
+    w6300_close_socket(sn);
     return got_ack;
 }

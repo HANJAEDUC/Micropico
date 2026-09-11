@@ -20,9 +20,15 @@ if errorlevel 1 (
     exit /b 1
 )
 
+copy /y build\w5500_pico2_firmware.uf2 ..\w5500_pico2_firmware.uf2 >nul
+copy /y build\w6300_pico2_firmware.uf2 ..\w6300_pico2_firmware.uf2 >nul
+
 echo ============================================================
 echo [SUCCESS] Compilation Complete! (Target: %FW_VER%)
-echo Binary output: build\w5500_pico2_firmware.bin
-echo UF2 output:    build\w5500_pico2_firmware.uf2
-echo Tip: Upload this .bin via Web UI at http://192.168.10.177
+echo [W5500]  UF2: build\w5500_pico2_firmware.uf2
+echo          BIN: build\w5500_pico2_firmware.bin
+echo [W6300]  UF2: build\w6300_pico2_firmware.uf2
+echo          BIN: build\w6300_pico2_firmware.bin
+echo Tip: Both UF2 files are also updated in the project root!
 echo ============================================================
+

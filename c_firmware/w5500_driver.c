@@ -1,3 +1,7 @@
+#include "config.h"
+
+#if (TARGET_ETH_CHIP == CHIP_W5500)
+
 #include "w5500_driver.h"
 #include "hardware/spi.h"
 #include "hardware/gpio.h"
@@ -365,9 +369,9 @@ void w5500_send_tx_data(uint8_t sn, const uint8_t *data, uint16_t len) {
 }
 
 void w5500_disconnect_socket(uint8_t sn) {
-    // 1. Check Sn_TX_RD == Sn_TX_WR to verify all TX bytes sent over network (up to 150ms wait)
+    // 1. Check Sn_TX_RD == Sn_TX_WR to verify all TX bytes sent over network (up to 1000ms wait)
     uint64_t start_t = time_us_64();
-    while (time_us_64() - start_t < 150000ULL) {
+    while (time_us_64() - start_t < 1000000ULL) {
         if (is_tx_buffer_empty(sn)) break;
         sleep_us(100);
     }
@@ -423,3 +427,5 @@ void w5500_send_udp_packet(uint8_t sn, const uint8_t remote_ip[4], uint16_t remo
     write_sn(sn, 0x0010, port_buf, 2);
     w5500_send_tx_data(sn, data, len);
 }
+
+#endif // (TARGET_ETH_CHIP == CHIP_W5500)

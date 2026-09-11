@@ -80,7 +80,7 @@
   </div>
   <div class="controls">
     <label for="subnetInput" style="font-size:12px; color:#94a3b8;">대역 설정:</label>
-    <input type="text" id="subnetInput" class="input-subnet" value="192.168.10" placeholder="192.168.10" onkeydown="if(event.key==='Enter') startScan();">
+    <input type="text" id="subnetInput" class="input-subnet" value="192.168.2" placeholder="192.168.2" onkeydown="if(event.key==='Enter') startScan();">
     <button id="startBtn" onclick="startScan()" class="btn btn-start">▶️ 스캔 시작 (Start)</button>
     <button id="stopBtn" onclick="stopScan()" class="btn btn-stop" disabled>⏹️ 스캔 중지 (Stop)</button>
   </div>
@@ -106,7 +106,7 @@
     <h2>📡 연결된 Pico 2 디바이스 목록</h2>
     <div style="display: flex; align-items: center; gap: 14px; flex-wrap: wrap;">
       <div class="notice-box" id="connNotice">
-        <span>💡 <strong>소켓 보호 안내:</strong> 스캔 중에는 W5500 단일 소켓 점유로 웹 UI 접속이 대기되며, <strong>스캔 완료/중지 즉시 활성화</strong>됩니다.</span>
+        <span>💡 <strong>즉시 연결 안내:</strong> 감지된 보드의 <strong>[🌐 웹 UI 바로가기]</strong>를 누르면 진행 중인 스캔이 자동 중지되고 즉시 웹 UI로 연결됩니다.</span>
       </div>
       <span style="font-size:12px; color:#94a3b8;" id="lastScanTime">마지막 업데이트: 없음</span>
     </div>
@@ -143,10 +143,16 @@ const activeAbortControllers = new Set();
 let foundDevices = [];
 let scanStartTime = 0;
 
+function openDevicePage(ip) {
+  stopScan();
+  setTimeout(() => {
+    window.open(`http://${ip}`, '_blank');
+  }, 100);
+}
+
 function renderTable(devices) {
   const tbody = document.getElementById('deviceTableBody');
   const subnet = document.getElementById('subnetInput').value.trim().replace(/\.$/, '');
-  const canConnect = !isScanning; // 스캔 중이 아닐 때만 웹 UI 연결 버튼 활성화
   
   if (!devices || devices.length === 0) {
     tbody.innerHTML = `<tr><td colspan="7" style="text-align:center; padding: 40px; color:#ef4444;">
@@ -156,13 +162,8 @@ function renderTable(devices) {
   } else {
     let html = '';
     devices.forEach((dev, idx) => {
-      const ipLinkHtml = canConnect 
-        ? `<a href="http://${dev.ip}" target="_blank" class="ip-link">http://${dev.ip}</a>`
-        : `<span class="ip-link disabled" title="스캔 진행 중에는 W5500 단일 소켓 점유로 접속이 대기됩니다.">http://${dev.ip}</span>`;
-        
-      const actionBtnHtml = canConnect
-        ? `<a href="http://${dev.ip}" target="_blank" class="action-btn active">🌐 웹 UI 바로가기</a>`
-        : `<span class="action-btn disabled" title="스캔 진행 중에는 웹 접속이 일시 제한됩니다. 스캔 완료 또는 [스캔 중지] 후 활성화됩니다.">⏳ 스캔 완료 후 활성화</span>`;
+      const ipLinkHtml = `<a href="javascript:void(0)" onclick="openDevicePage('${dev.ip}')" class="ip-link" title="클릭 시 스캔을 자동 종료하고 웹페이지를 엽니다.">http://${dev.ip}</a>`;
+      const actionBtnHtml = `<button onclick="openDevicePage('${dev.ip}')" class="action-btn active" style="border:none; cursor:pointer;" title="클릭 시 스캔을 자동 종료하고 즉시 웹페이지로 이동합니다.">🌐 웹 UI 바로가기</button>`;
 
       html += `<tr>
         <td>${idx + 1}</td>
@@ -201,7 +202,7 @@ async function scanIpAddress(ip) {
       const data = await response.json();
       return {
         ip: ip,
-        version: data.version || "V0.212+",
+        version: data.version || "V0.261",
         temp: (data.cpu_temp !== undefined ? Number(data.cpu_temp).toFixed(1) : "32.0") + " °C",
         latency: latency + " ms",
         status: "ONLINE"
@@ -304,9 +305,12 @@ async function startScan() {
     statTime.innerText = curElapsed + ' 초';
   }, 100);
   
-  // Step 1: Scan Priority Known IPs (.177 and .100 ~ .115) first
+  // Step 1: Scan Priority Known IPs (.177, .100 ~ .115, and .140 ~ .145) first
   const priorityIps = [`${subnet}.177`];
   for (let p = 100; p <= 115; p++) {
+    priorityIps.push(`${subnet}.${p}`);
+  }
+  for (let p = 140; p <= 145; p++) {
     priorityIps.push(`${subnet}.${p}`);
   }
   

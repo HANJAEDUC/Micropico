@@ -25,10 +25,20 @@ if errorlevel 1 (
     exit /b 1
 )
 
+findstr /C:"TARGET_ETH_CHIP CHIP_W6300" config.h >nul
+if %errorlevel% equ 0 (
+    set BIN_NAME=w6300_pico2_firmware.bin
+    set ETH_NAME=W6300
+) else (
+    set BIN_NAME=w5500_pico2_firmware.bin
+    set ETH_NAME=W5500
+)
+
 echo ============================================================
-echo [2/2] Flashing Pico 2 (%FW_VER%) via W5500 Ethernet [192.168.10.177]
+echo [2/2] Flashing Pico 2 (%FW_VER%) via %ETH_NAME% Ethernet [192.168.10.177]
+echo Target Binary: build\%BIN_NAME%
 echo ============================================================
-curl -X POST --data-binary "@build\w5500_pico2_firmware.bin" "http://192.168.10.177/upload_pico_fw?name=w5500_pico2_firmware.bin"
+curl.exe -X POST --data-binary "@build\%BIN_NAME%" "http://192.168.10.177/upload_pico_fw?name=%BIN_NAME%"
 echo.
 
 echo ============================================================

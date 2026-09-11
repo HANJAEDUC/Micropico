@@ -12,4 +12,7 @@ void get_unique_mac_address(uint8_t mac[6]);
 // Returns false on timeout or no DHCP server (allowing automatic fallback to static IP)
 bool w5500_dhcp_run(uint8_t assigned_ip[4], uint8_t assigned_sn[4], uint8_t assigned_gw[4], const uint8_t mac[6], uint32_t timeout_ms);
 
+// Run W6300 DHCP Client on Socket 2 (UDP Port 68/67) - same behavior as w5500_dhcp_run
+bool w6300_dhcp_run(uint8_t assigned_ip[4], uint8_t assigned_sn[4], uint8_t assigned_gw[4], const uint8_t mac[6], uint32_t timeout_ms);
+
 #endif // DHCP_CLIENT_H

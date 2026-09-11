@@ -8,6 +8,10 @@
 #include "hardware/watchdog.h"
 #include "hardware/structs/scb.h"
 #include "hardware/structs/systick.h"
+#include "hardware/structs/psm.h"
+#include "hardware/regs/psm.h"
+#include "hardware/regs/watchdog.h"
+#include "hardware/regs/m33.h"
 #include "pico/stdlib.h"
 #include "rtd_isp.h"
 
@@ -50,6 +54,10 @@ static firmware_info_t g_fw_info = {
     .big_bin_checksum = "N/A",
     .sum32_checksum = "N/A"
 };
+
+// 🛡️ 상호 배제 Lock 플래그 (Pico 2 OTA vs Realtek 스케일러 작업 동시 충돌 방지)
+volatile bool g_pico_ota_busy = false;
+volatile bool g_rtd_busy = false;
 
 static void load_firmware_info_from_flash(void) {
     const persistent_fw_info_t *flash_ptr = (const persistent_fw_info_t *)(XIP_BASE + FLASH_INFO_OFFSET);
@@ -166,7 +174,81 @@ static void __no_inline_not_in_flash_func(ensure_rtd_sector_erased)(uint32_t fla
     }
 }
 
-static void process_uf2_chunk(const uint8_t *data, uint32_t len, uint8_t *uf2_block, uint32_t *uf2_idx, uint32_t *out_sum, uint32_t *out_written) {
+static const char *ci_strstr(const char *haystack, const char *needle) {
+    if (!haystack || !needle) return NULL;
+    size_t nlen = strlen(needle);
+    if (nlen == 0) return haystack;
+    while (*haystack) {
+        size_t i = 0;
+        while (needle[i] && tolower((unsigned char)haystack[i]) == tolower((unsigned char)needle[i])) {
+            i++;
+        }
+        if (i == nlen) return haystack;
+        haystack++;
+    }
+    return NULL;
+}
+
+static bool check_tag_with_carry(const uint8_t *chunk, uint32_t len, uint8_t *carry_buf, uint32_t *carry_len, const char *tag) {
+    if (!chunk || len == 0 || !tag) return false;
+    size_t tag_len = strlen(tag);
+    if (tag_len == 0) return false;
+
+    // 1. If we have carry from previous chunk, test boundary seam
+    if (carry_buf && carry_len && *carry_len > 0) {
+        uint8_t boundary[128];
+        uint32_t head = *carry_len;
+        if (head > tag_len) head = tag_len;
+        uint32_t tail = len;
+        if (tail > tag_len) tail = tag_len;
+        memcpy(boundary, carry_buf + (*carry_len - head), head);
+        memcpy(boundary + head, chunk, tail);
+        uint32_t total = head + tail;
+        if (total >= tag_len) {
+            for (uint32_t i = 0; i <= total - tag_len; i++) {
+                if (memcmp(boundary + i, tag, tag_len) == 0) return true;
+            }
+        }
+    }
+
+    // 2. Test within current chunk
+    if (len >= tag_len) {
+        for (uint32_t i = 0; i <= len - tag_len; i++) {
+            if (memcmp(chunk + i, tag, tag_len) == 0) return true;
+        }
+    }
+
+    // 3. Save trailing bytes to carry buffer for next boundary check
+    if (carry_buf && carry_len) {
+        uint32_t save_len = (len > 48) ? 48 : len;
+        memcpy(carry_buf, chunk + (len - save_len), save_len);
+        *carry_len = save_len;
+    }
+    return false;
+}
+
+static void get_opposite_chip_tag(char *out, size_t out_sz) {
+#if (TARGET_ETH_CHIP == CHIP_W6300)
+    // Obfuscated "##PICO2_ETH_TARGET:W5500##" (XOR 0x5A)
+    static const uint8_t enc[] = {
+        0x79, 0x79, 0x0A, 0x13, 0x19, 0x15, 0x68, 0x05, 0x1F, 0x0E, 0x12, 0x05, 0x0E, 0x1B, 0x08, 0x1D, 0x1F, 0x0E, 0x60, 0x0D, 0x6F, 0x6F, 0x6A, 0x6A, 0x79, 0x79, 0x5A
+    };
+#else
+    // Obfuscated "##PICO2_ETH_TARGET:W6300##" (XOR 0x5A)
+    static const uint8_t enc[] = {
+        0x79, 0x79, 0x0A, 0x13, 0x19, 0x15, 0x68, 0x05, 0x1F, 0x0E, 0x12, 0x05, 0x0E, 0x1B, 0x08, 0x1D, 0x1F, 0x0E, 0x60, 0x0D, 0x6C, 0x69, 0x6A, 0x6A, 0x79, 0x79, 0x5A
+    };
+#endif
+    size_t len = sizeof(enc) - 1;
+    if (len >= out_sz) len = out_sz - 1;
+    for (size_t i = 0; i < len; i++) {
+        out[i] = (char)(enc[i] ^ 0x5A);
+    }
+    out[len] = '\0';
+}
+
+static void process_uf2_chunk(const uint8_t *data, uint32_t len, uint8_t *uf2_block, uint32_t *uf2_idx, uint32_t *out_sum, uint32_t *out_written, bool *out_chip_mismatch, uint8_t *carry_buf, uint32_t *carry_len, const char *opp_tag) {
+    if (out_chip_mismatch && *out_chip_mismatch) return;
     for (uint32_t i = 0; i < len; i++) {
         uf2_block[(*uf2_idx)++] = data[i];
         if (*uf2_idx == 512) {
@@ -174,7 +256,7 @@ static void process_uf2_chunk(const uint8_t *data, uint32_t len, uint8_t *uf2_bl
             uint32_t m2 = (uint32_t)uf2_block[4] | ((uint32_t)uf2_block[5] << 8) | ((uint32_t)uf2_block[6] << 16) | ((uint32_t)uf2_block[7] << 24);
             uint32_t m3 = (uint32_t)uf2_block[508] | ((uint32_t)uf2_block[509] << 8) | ((uint32_t)uf2_block[510] << 16) | ((uint32_t)uf2_block[511] << 24);
 
-            if (m1 == 0x0A324655ULL && m2 == 0x9E5D5157ULL && m3 == 0x0A51697DULL) {
+            if (m1 == 0x0A324655ULL && m2 == 0x9E5D5157ULL && (m3 == 0x0AB16F30ULL || m3 == 0x0A51697DULL)) {
                 uint32_t target_addr = (uint32_t)uf2_block[12] | ((uint32_t)uf2_block[13] << 8) | ((uint32_t)uf2_block[14] << 16) | ((uint32_t)uf2_block[15] << 24);
                 uint32_t plen = (uint32_t)uf2_block[16] | ((uint32_t)uf2_block[17] << 8) | ((uint32_t)uf2_block[18] << 16) | ((uint32_t)uf2_block[19] << 24);
 
@@ -185,6 +267,12 @@ static void process_uf2_chunk(const uint8_t *data, uint32_t len, uint8_t *uf2_bl
 
                 if (plen == 256 && flash_rel < FLASH_OTA_MAX_SIZE) {
                     const uint8_t *payload = &uf2_block[32];
+                    if (check_tag_with_carry(payload, 256, carry_buf, carry_len, opp_tag)) {
+                        if (out_chip_mismatch) *out_chip_mismatch = true;
+                        *uf2_idx = 0;
+                        return;
+                    }
+
                     for (int k = 0; k < 256; k++) {
                         *out_sum += payload[k];
                     }
@@ -284,7 +372,7 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
     // 1. Head, CSS, and JS
     snprintf(buf + strlen(buf), max_len - strlen(buf),
         "<!DOCTYPE html><html><head><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width, initial-scale=1\">"
-        "<title>DHUB PICO2</title>"
+        "<title>DHUB PICO2 [" ETH_CHIP_NAME "]</title>"
         "<style>"
         "* { box-sizing: border-box; margin: 0; padding: 0; }"
         "html, body { min-height: 100%%; overflow-y: auto; overflow-x: hidden; scroll-behavior: smooth; }"
@@ -354,28 +442,116 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "    dpms.innerText = String(h).padStart(2,'0') + ':' + String(m).padStart(2,'0') + ':' + String(s).padStart(2,'0') + ' (00:00)';"
         "  }"
         "}"
-        "function fetchStatus(){"
-        "  fetch('/api/status?t=' + Date.now()).then(r => r.json()).then(d => {"
-        "    if(d && d.uptime_sec !== undefined && d.uptime_sec > 0){"
-        "      currentUptime = d.uptime_sec;"
+        "function renderLedStatus(d){"
+        "  const val = document.getElementById('ledStateVal');"
+        "  const bulb = document.getElementById('ledBulbVisual');"
+        "  const modeTxt = document.getElementById('ledCurrentModeText');"
+        "  const intTxt = document.getElementById('ledCurrentIntervalText');"
+        "  if(val){"
+        "    val.innerHTML = d.led_state ? 'ON 🟢' : 'OFF 🔴';"
+        "    val.style.color = d.led_state ? '#4ade80' : '#ef4444';"
+        "  }"
+        "  if(bulb){"
+        "    if(d.led_state){"
+        "      bulb.style.background = '#22c55e';"
+        "      bulb.style.boxShadow = '0 0 25px #22c55e, 0 0 50px rgba(34,197,94,0.7)';"
+        "      bulb.style.borderColor = '#4ade80';"
+        "    } else {"
+        "      bulb.style.background = '#1e293b';"
+        "      bulb.style.boxShadow = 'none';"
+        "      bulb.style.borderColor = '#475569';"
         "    }"
+        "  }"
+        "  if(modeTxt && d.mode !== undefined){"
+        "    const modes = ['⚡ 하트비트 점멸 (Blink)', '💡 상시 점등 (ON)', '🛑 상시 소등 (OFF)', '🆘 SOS 긴급 모스부호', '📍 비컨 위치 식별'];"
+        "    modeTxt.innerText = modes[d.mode] || '알 수 없음';"
+        "  }"
+        "  if(intTxt && d.interval !== undefined){"
+        "    intTxt.innerText = d.interval + ' ms';"
+        "  }"
+        "}"
+        "function setLedMode(mode, interval){"
+        "  let url = '/api/led?mode=' + mode;"
+        "  if(interval) url += '&interval=' + interval;"
+        "  fetch(url).then(r => r.json()).then(d => {"
+        "    renderLedStatus(d);"
         "  }).catch(e => {});"
         "}"
         "function toggleLed(state){"
-        "  fetch('/api/led?state=' + state).then(r => r.json()).then(d => {"
-        "    const val = document.getElementById('ledStateVal');"
-        "    if(val){"
-        "      val.innerHTML = d.led_state ? 'ON 🟢' : 'OFF 🔴';"
-        "      val.style.color = d.led_state ? '#4ade80' : '#ef4444';"
+        "  setLedMode(state ? 'on' : 'off');"
+        "}"
+        "let isRealtekBusy = false;"
+        "let isPicoOtaBusy = false;"
+        "function setRealtekLock(busy){"
+        "  isRealtekBusy = busy;"
+        "  const pFile = document.getElementById('picoOtaFile');"
+        "  const pBtn = document.getElementById('picoOtaBtn');"
+        "  if(pFile) pFile.disabled = busy;"
+        "  if(pBtn){"
+        "    pBtn.disabled = busy;"
+        "    pBtn.style.opacity = busy ? '0.35' : '1';"
+        "    pBtn.style.cursor = busy ? 'not-allowed' : 'pointer';"
+        "    pBtn.title = busy ? '⚠️ Realtek 작업 진행 중 (Pico OTA 잠김)' : '';"
+        "  }"
+        "}"
+        "function setPicoOtaLock(busy){"
+        "  isPicoOtaBusy = busy;"
+        "  const rFile = document.getElementById('fwFile');"
+        "  const rBtn = document.getElementById('uploadBtn');"
+        "  const rFlashBtn = document.getElementById('rtdFlashBtn');"
+        "  if(rFile) rFile.disabled = busy;"
+        "  if(rBtn){"
+        "    rBtn.disabled = busy;"
+        "    rBtn.style.opacity = busy ? '0.35' : '1';"
+        "    rBtn.style.cursor = busy ? 'not-allowed' : 'pointer';"
+        "    rBtn.title = busy ? '⚠️ Pico 2 OTA 진행 중 (Realtek 업로드 잠김)' : '';"
+        "  }"
+        "  if(rFlashBtn){"
+        "    rFlashBtn.disabled = busy;"
+        "    rFlashBtn.style.opacity = busy ? '0.35' : '1';"
+        "    rFlashBtn.style.cursor = busy ? 'not-allowed' : 'pointer';"
+        "    rFlashBtn.title = busy ? '⚠️ Pico 2 OTA 진행 중 (Realtek 플래시 잠김)' : '';"
+        "  }"
+        "}"
+        "let isFetchingStatus = false;"
+        "function fetchStatus(){"
+        "  if(isFetchingStatus || isPicoOtaBusy || isRealtekBusy) return;"
+        "  isFetchingStatus = true;"
+        "  const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;"
+        "  const toId = ctrl ? setTimeout(() => ctrl.abort(), 2500) : null;"
+        "  const fetchOpts = ctrl ? { signal: ctrl.signal, cache: 'no-store' } : { cache: 'no-store' };"
+        "  fetch('/api/status?t=' + Date.now(), fetchOpts).then(r => r.json()).then(d => {"
+        "    if(toId) clearTimeout(toId);"
+        "    isFetchingStatus = false;"
+        "    if(d && d.uptime_sec !== undefined && d.uptime_sec > 0){"
+        "      currentUptime = d.uptime_sec;"
         "    }"
-        "  }).catch(e => {});"
+        "    if(d && d.led_state !== undefined){"
+        "      renderLedStatus({"
+        "        led_state: d.led_state,"
+        "        mode: d.led_mode,"
+        "        interval: d.led_interval"
+        "      });"
+        "    }"
+        "    if(d && d.ota_busy !== undefined){"
+        "      if(d.ota_busy && !isPicoOtaBusy) setPicoOtaLock(true);"
+        "      else if(!d.ota_busy && isPicoOtaBusy) setPicoOtaLock(false);"
+        "    }"
+        "    if(d && d.rtd_busy !== undefined){"
+        "      if(d.rtd_busy && !isRealtekBusy) setRealtekLock(true);"
+        "      else if(!d.rtd_busy && isRealtekBusy) setRealtekLock(false);"
+        "    }"
+        "  }).catch(e => {"
+        "    if(toId) clearTimeout(toId);"
+        "    isFetchingStatus = false;"
+        "  });"
         "}"
         "function startTimers(){"
         "  updateClock();"
         "  tickUptime();"
         "  setInterval(updateClock, 1000);"
         "  setInterval(tickUptime, 1000);"
-        "  setInterval(fetchStatus, 3000);"
+        "  window.statusTimer = setInterval(fetchStatus, 1500);"
         "  const inp = document.getElementById('ethCmdInput');"
         "  if(inp){"
         "    inp.addEventListener('input', updateCharCount);"
@@ -418,11 +594,84 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "    }"
         "  }"
         "}"
+        "function handlePicoFileSelect(e){"
+        "  const file = e.target.files[0];"
+        "  const statusMsg = document.getElementById('pico-ota-status-msg');"
+        "  const btn = document.getElementById('picoOtaBtn');"
+        "  if(!file){ if(statusMsg) statusMsg.innerHTML=''; return; }"
+        "  const fname = file.name.toLowerCase();"
+        "  const currentChip = '" ETH_CHIP_NAME "';"
+        "  const oppositeChip = '" OPPOSITE_CHIP_NAME "';"
+        "  const oppositeTag = atob('" OPPOSITE_CHIP_TAG_B64 "');"
+        "  if(fname.includes(oppositeChip.toLowerCase())){"
+        "    const errMsg = '❌ [칩셋 파일명 불일치 차단] 현재 장비는 ' + currentChip + ' 보드입니다!\\n\\n선택하신 파일(' + file.name + ')은 ' + oppositeChip + ' 전용 펌웨어이므로, 장비 통신 먹통(벽돌) 방지를 위해 업로드가 차단되었습니다.\\n👉 올바른 ' + currentChip + ' 전용 펌웨어를 선택해주세요.';"
+        "    alert(errMsg);"
+        "    e.target.value = '';"
+        "    if(statusMsg){ statusMsg.style.color='#ef4444'; statusMsg.innerHTML='❌ <strong>칩셋 불일치 차단:</strong> ' + file.name + ' (' + oppositeChip + ' 전용 펌웨어는 ' + currentChip + ' 보드에 업로드할 수 없습니다.)'; }"
+        "    return;"
+        "  }"
+        "  if(statusMsg){ statusMsg.style.color='#38bdf8'; statusMsg.innerHTML='⏳ 바이너리 무결성 및 ' + currentChip + ' 하드웨어 서명 사전 검사 중...'; }"
+        "  const reader = new FileReader();"
+        "  reader.onload = function(evt){"
+        "    const buf = evt.target.result;"
+        "    const u8 = new Uint8Array(buf);"
+        "    const magic_uf2 = (u8[0] | (u8[1] << 8) | (u8[2] << 16) | (u8[3] << 24)) >>> 0;"
+        "    const initial_sp = magic_uf2;"
+        "    const is_uf2 = (magic_uf2 === 0x0A324655) || fname.endsWith('.uf2');"
+        "    if(is_uf2){"
+        "      alert('⚠️ [OTA 파일 형식 안내]\\n\\n선택하신 파일(' + file.name + ')은 USB BOOTSEL 드래그 앤 드롭 복사용 .uf2 파일입니다.\\n\\n이더넷 OTA 원격 업데이트는 100%% 무결성을 위해 .bin 바이너리 파일만 지원합니다.\\n\\n👉 build 폴더 안의 ' + currentChip.toLowerCase() + '_pico2_firmware.bin 파일을 선택해주세요!');"
+        "      e.target.value = '';"
+        "      if(statusMsg){ statusMsg.style.color='#facc15'; statusMsg.innerHTML='⚠️ <strong>.bin 전용:</strong> 이더넷 OTA는 .bin 바이너리만 지원합니다. (UF2는 초기 USB 복사용)'; }"
+        "      return;"
+        "    }"
+        "    const is_rp2350_bin = (initial_sp === 0x4D535052 || initial_sp === 0xFFFFEDAC || (initial_sp >= 0x20000000 && initial_sp <= 0x200B0000));"
+        "    const is_realtek = fname.includes('dh9') || fname.includes('rlt') || fname.includes('dlc') || (u8[0] === 0x02 || u8[0] === 0x12);"
+        "    if(!is_rp2350_bin && is_realtek){"
+        "      alert('⚠️ [안전 차단] 선택하신 파일(' + file.name + ')은 Realtek 스케일러 펌웨어입니다!\\n\\nPico 2 OTA 카드에는 Pico 2 전용 펌웨어만 업로드할 수 있습니다.\\nRealtek 펌웨어는 오른쪽 [⚡ Realtek 전용 스케일러 ISP] 카드를 이용해주세요.');"
+        "      e.target.value = '';"
+        "      if(statusMsg){ statusMsg.style.color='#ef4444'; statusMsg.innerHTML='❌ <strong>Realtek 펌웨어 감지됨:</strong> 오른쪽 스케일러 카드를 이용해주세요.'; }"
+        "      return;"
+        "    }"
+        "    const tagBytes = new TextEncoder().encode(oppositeTag);"
+        "    const tLen = tagBytes.length;"
+        "    let tagFound = false;"
+        "    for(let i = 0; i <= u8.length - tLen; i++){"
+        "      if(u8[i] === tagBytes[0]){"
+        "        let match = true;"
+        "        for(let j = 1; j < tLen; j++){"
+        "          if(u8[i+j] !== tagBytes[j]){ match = false; break; }"
+        "        }"
+        "        if(match){ tagFound = true; break; }"
+        "      }"
+        "    }"
+        "    if(tagFound){"
+        "      alert('❌ [바이너리 칩셋 서명(Signature) 사전 차단!]\\n\\n현재 장비: ' + currentChip + ' 보드\\n선택 파일: ' + file.name + '\\n검출 서명: ' + oppositeChip + ' 전용 바이너리 (' + oppositeTag + ')\\n\\n⚠️ 파일명을 변경하였더라도 내부 바이너리 서명이 달라 통신 불가(벽돌) 위험이 있습니다.\\n펌웨어 업로드가 사전에 안전하게 차단되었습니다!');"
+        "      e.target.value = '';"
+        "      if(statusMsg){ statusMsg.style.color='#ef4444'; statusMsg.innerHTML='❌ <strong>' + oppositeChip + ' 바이너리 서명 검출됨:</strong> ' + currentChip + ' 보드 교차 업로드 불가'; }"
+        "      return;"
+        "    }"
+        "    if(statusMsg){"
+        "      statusMsg.style.color='#4ade80';"
+        "      statusMsg.innerHTML='<div style=\"background:#0b132b;padding:6px 8px;border-radius:6px;border:1px solid #0284c7;font-size:11px;\">📁 <strong>' + file.name + '</strong> (' + (file.size/1024).toFixed(1) + ' KB) - BIN 순수 바이너리 | 🛡️ ' + currentChip + ' 무결성 검증 정상</div>';"
+        "    }"
+        "  };"
+        "  reader.readAsArrayBuffer(file);"
+        "}"
         "function handleFileSelect(e){"
         "  const file = e.target.files[0];"
         "  const infoDiv = document.getElementById('selected-file-info');"
+        "  const statusMsg = document.getElementById('status-msg');"
+        "  const btn = document.getElementById('uploadBtn');"
         "  if(!file){ infoDiv.style.display='none'; return; }"
         "  const fname = file.name;"
+        "  const fnameLower = fname.toLowerCase();"
+        "  if(fnameLower.includes('pico2') || fnameLower.includes('w5500') || fnameLower.includes('w6300')){"
+        "    alert('❌ [Realtek 스케일러 펌웨어 오류]\\n\\n선택하신 파일(' + fname + ')은 Pico 2 메인보드 전용 펌웨어입니다!\\n\\n이 카드는 Realtek 디스플레이 스케일러 IC 전용 펌웨어 저장 공간입니다.\\nPico 2 메인보드 펌웨어는 왼쪽 [🚀 Pico 2 전용 이더넷 OTA] 카드를 이용해주세요.');"
+        "    e.target.value = '';"
+        "    infoDiv.style.display='block';"
+        "    infoDiv.innerHTML = '<div style=\"background:#0b132b;padding:6px 8px;border-radius:6px;border:1px solid #ef4444;text-align:left;font-size:11px;color:#ef4444;\">❌ <strong>Pico 2 전용 펌웨어 차단:</strong> Realtek 스케일러 펌웨어를 선택해주세요.</div>';"
+        "    return;"
+        "  }"
         "  let bigBinFromFn = null;"
         "  const match = fname.match(/0[xX]([0-9a-fA-F]{8})/);"
         "  if(match && match[1]){"
@@ -430,10 +679,20 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "    bigBinFromFn = hex.substring(0,4)+' '+hex.substring(4,8);"
         "  }"
         "  infoDiv.style.display='block';"
-        "  infoDiv.innerHTML = '<div style=\"background:#0b132b;padding:6px 8px;border-radius:6px;border:1px solid #5bc0be;text-align:left;font-size:11px;\"><span style=\"color:#5bc0be;font-weight:bold;\">⏳ 체크섬 계산 중...</span> <span style=\"color:#cbd5e1;\">' + fname + ' (' + (file.size/1024).toFixed(1) + ' KB)</span></div>';"
+        "  infoDiv.innerHTML = '<div style=\"background:#0b132b;padding:6px 8px;border-radius:6px;border:1px solid #5bc0be;text-align:left;font-size:11px;\"><span style=\"color:#5bc0be;font-weight:bold;\">⏳ 체크섬 및 스케일러 서명 검사 중...</span> <span style=\"color:#cbd5e1;\">' + fname + ' (' + (file.size/1024).toFixed(1) + ' KB)</span></div>';"
         "  const reader = new FileReader();"
         "  reader.onload = function(evt){"
         "    const bytes = new Uint8Array(evt.target.result);"
+        "    const magic_uf2 = (bytes[0] | (bytes[1] << 8) | (bytes[2] << 16) | (bytes[3] << 24)) >>> 0;"
+        "    const initial_sp = magic_uf2;"
+        "    const is_uf2 = (magic_uf2 === 0x0A324655);"
+        "    const is_rp2350_bin = (initial_sp === 0x4D535052 || initial_sp === 0xFFFFEDAC || (initial_sp >= 0x20000000 && initial_sp <= 0x200B0000));"
+        "    if(is_uf2 || is_rp2350_bin){"
+        "      alert('❌ [Realtek 스케일러 펌웨어 오류]\\n\\n선택하신 파일(' + fname + ') 내부 바이너리는 Pico 2 (RP2350) ARM 실행 파일입니다!\\n\\nRealtek 스케일러 플래시에는 Realtek IC 바이너리만 업로드해야 합니다.\\nPico 2 펌웨어는 왼쪽 [🚀 Pico 2 전용 이더넷 OTA] 카드를 이용해주세요.');"
+        "      e.target.value = '';"
+        "      infoDiv.innerHTML = '<div style=\"background:#0b132b;padding:6px 8px;border-radius:6px;border:1px solid #ef4444;text-align:left;font-size:11px;color:#ef4444;\">❌ <strong>Pico 2 ARM 바이너리 차단:</strong> Realtek 스케일러 펌웨어 파일이 아닙니다.</div>';"
+        "      return;"
+        "    }"
         "    let totalSum = 0;"
         "    for(let i=0; i<bytes.length; i++) totalSum = (totalSum + bytes[i]) >>> 0;"
         "    const h = ((totalSum >>> 16) & 0xFFFF).toString(16).padStart(4,'0').toUpperCase();"
@@ -441,7 +700,7 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "    const sumHex = totalSum.toString(16).padStart(8,'0').toUpperCase();"
         "    const sum32Chk = h + ' ' + l + ' (0x' + sumHex + ')';"
         "    const bigBinDisplay = bigBinFromFn ? bigBinFromFn : (h + ' ' + l);"
-        "    infoDiv.innerHTML = '<div style=\"background:#0b132b;padding:6px 8px;border-radius:6px;border:1px solid #0284c7;text-align:left;font-size:11px;\"><div style=\"color:#cbd5e1;margin-bottom:2px;\">📁 <strong>' + fname + '</strong> (' + (file.size/1024).toFixed(1) + ' KB)</div><div style=\"color:#5bc0be;font-family:monospace;font-size:11px;\">🏷 Big Bin: ' + bigBinDisplay + ' | 🔢 Sum32: ' + sum32Chk + '</div></div>';"
+        "    infoDiv.innerHTML = '<div style=\"background:#0b132b;padding:6px 8px;border-radius:6px;border:1px solid #22c55e;text-align:left;font-size:11px;\"><div style=\"color:#cbd5e1;margin-bottom:2px;\">📁 <strong>' + fname + '</strong> (' + (file.size/1024).toFixed(1) + ' KB)</div><div style=\"color:#5bc0be;font-family:monospace;font-size:11px;\">🏷 Big Bin: ' + bigBinDisplay + ' | 🔢 Sum32: ' + sum32Chk + '</div></div>';"
         "  };"
         "  reader.readAsArrayBuffer(file);"
         "}"
@@ -454,9 +713,15 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "    }"
         "  }).catch(e => alert('초기화 실패'));"
         "}"
-        "async function uploadFirmware(){"
+        "function uploadFirmware(){"
+        "  if(isPicoOtaBusy) return alert('⚠️ [작업 차단] Pico 2 이더넷 OTA가 진행 중입니다!\\n\\nOTA 완료 후 Realtek 작업을 진행해주세요.');"
         "  const file = document.getElementById('fwFile').files[0];"
         "  if(!file) return alert('업로드할 Realtek 펌웨어 파일(.bin)을 선택해주세요!');"
+        "  const fnameLower = file.name.toLowerCase();"
+        "  if(fnameLower.includes('pico2') || fnameLower.includes('w5500') || fnameLower.includes('w6300')){"
+        "    return alert('❌ [업로드 차단] 선택하신 파일은 Pico 2 보드 전용 펌웨어입니다!\\n\\nRealtek 스케일러 카드에는 Realtek 전용 펌웨어만 업로드할 수 있습니다.');"
+        "  }"
+        "  setRealtekLock(true);"
         "  const btn = document.getElementById('uploadBtn');"
         "  const statusMsg = document.getElementById('status-msg');"
         "  const progressContainer = document.getElementById('progress-container');"
@@ -465,63 +730,63 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "  btn.disabled = true; btn.style.opacity = '0.5';"
         "  progressContainer.style.display = 'block';"
         "  progressBar.style.width = '0%%';"
-        "  progressText.innerText = 'Pico 2 플래시 메모리 섹터 소거 중...';"
+        "  progressText.innerText = '0%% (0 KB / ' + (file.size / 1024).toFixed(0) + ' KB)';"
         "  statusMsg.style.color = '#5bc0be';"
-        "  statusMsg.innerText = '⚡ Pico 2 온보드 플래시 메모리 소거 및 전송 준비 중...';"
-        "  async function sendWithRetry(url, opt, retries=3){"
-        "    for(let i=0; i<retries; i++){"
-        "      try {"
-        "        const r = await fetch(url, opt);"
-        "        if(r.ok) return r;"
-        "      } catch(e){}"
-        "      await new Promise(res => setTimeout(res, 30));"
-        "    }"
-        "    throw new Error('네트워크 전송 실패');"
-        "  }"
-        "  try {"
-        "    const startRes = await sendWithRetry('/upload_start?name=' + encodeURIComponent(file.name) + '&size=' + file.size, { method: 'POST' });"
-        "    const CHUNK_SIZE = 65536;"
-        "    let offset = 0;"
-        "    while(offset < file.size){"
-        "      const end = Math.min(offset + CHUNK_SIZE, file.size);"
-        "      const chunk = file.slice(offset, end);"
-        "      const pct = Math.round((offset / file.size) * 100);"
+        "  statusMsg.innerText = '⚡ Realtek 펌웨어 초고속 스트리밍 전송 중...';"
+        "  const xhr = new XMLHttpRequest();"
+        "  xhr.open('POST', '/upload?name=' + encodeURIComponent(file.name) + '&size=' + file.size, true);"
+        "  xhr.setRequestHeader('Content-Type', 'application/octet-stream');"
+        "  xhr.timeout = 120000;"
+        "  xhr.upload.onprogress = function(e){"
+        "    if(e.lengthComputable){"
+        "      const pct = Math.round((e.loaded / e.total) * 100);"
         "      progressBar.style.width = pct + '%%';"
-        "      progressText.innerText = pct + '%% (' + (offset / 1024).toFixed(0) + ' KB / ' + (file.size / 1024).toFixed(0) + ' KB)';"
-        "      statusMsg.innerText = '⚡ 64KB 고속 청크 전송 중 (' + pct + '%%)...';"
-        "      await sendWithRetry('/upload_chunk?offset=' + offset + '&size=' + (end - offset), { method: 'POST', body: chunk });"
-        "      offset = end;"
-        "      await new Promise(res => setTimeout(res, 10));"
+        "      progressText.innerText = pct + '%% (' + (e.loaded / 1024).toFixed(0) + ' KB / ' + (e.total / 1024).toFixed(0) + ' KB)';"
+        "      statusMsg.innerText = '⚡ 고속 스트리밍 전송 중 (' + pct + '%%)...';"
         "    }"
-        "    progressBar.style.width = '100%%';"
-        "    progressText.innerText = '100%% (전송 완료)';"
-        "    statusMsg.innerText = '🔢 펌웨어 체크섬 검증 및 플래시 메타데이터 영구 저장 중...';"
-        "    const finRes = await sendWithRetry('/upload_finish?name=' + encodeURIComponent(file.name) + '&size=' + file.size, { method: 'POST' });"
-        "    const d = await finRes.json();"
+        "  };"
+        "  xhr.onload = function(){"
         "    btn.disabled = false; btn.style.opacity = '1';"
-        "    statusMsg.style.color = '#4ade80';"
-        "    statusMsg.innerText = '⚡ Realtek 펌웨어(' + d.filename + ') 100%% 무결성 저장 성공!';"
-        "    const el = document.getElementById('stored-fw-container');"
-        "    if(el){"
-        "      el.innerHTML = '<div style=\"text-align: left; background: #0b132b; padding: 8px; border-radius: 6px; border: 1px solid #3a506b; font-size: 12px;\">' +"
-        "        '<div style=\"margin-bottom: 4px;\"><strong>📁 저장된 파일명:</strong> <span style=\"color: #cbd5e1; word-break: break-all;\">' + d.filename + '</span></div>' +"
-        "        '<div style=\"margin-bottom: 4px;\"><strong>📊 저장된 용량:</strong> <span style=\"color: #4ade80;\">' + d.size.toLocaleString() + ' Bytes (' + d.size_kb + ' KB)</span></div>' +"
-        "        '<div style=\"margin-bottom: 4px;\"><strong>🏷 Big Bin Checksum (RTDTool v3.1.3):</strong> <span style=\"color: #5bc0be; font-weight: bold; font-family: monospace;\">' + d.big_bin + '</span></div>' +"
-        "        '<div style=\"margin-bottom: 6px;\"><strong>🔢 32-bit Byte Sum Checksum (RTDTool v3.8):</strong> <span style=\"color: #facc15; font-weight: bold; font-family: monospace;\">' + d.sum32 + '</span></div>' +"
-        "        '<div style=\"display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;\">' +"
-        "        '<button onclick=\"pingRtdScaler(); return false;\" class=\"btn\" style=\"background:#0284c7; padding:6px 10px; font-size:11px; font-weight:bold;\">📡 I2C 통신 확인</button>' +"
-        "        '<button onclick=\"flashRtdScaler(); return false;\" id=\"rtdFlashBtn\" class=\"btn\" style=\"background:#22c55e; padding:6px 12px; font-size:11px; font-weight:bold;\">⚡ 스케일러 ISP 플래시 시작</button>' +"
-        "        '<button onclick=\"clearStoredFirmware(); return false;\" style=\"background:#ef4444; color:#fff; border:none; padding:6px 8px; border-radius:6px; font-size:11px; font-weight:bold; cursor:pointer;\">🗑 초기화</button>' +"
-        "        '</div>' +"
-        "        '<div id=\"rtd-isp-progress-container\" style=\"display:none; margin-top:8px; background:#0b132b; border-radius:6px; border:1px solid #3a506b; height:16px; position:relative; overflow:hidden;\"><div id=\"rtd-isp-progress-bar\" style=\"width:0%%; height:100%%; background:linear-gradient(90deg,#22c55e,#5bc0be); transition: width 0.2s;\"></div><div id=\"rtd-isp-progress-text\" style=\"position:absolute; width:100%%; top:0; left:0; line-height:16px; font-size:10px; font-weight:bold; color:#fff; text-align:center;\">0%%</div></div>' +"
-        "        '<div id=\"rtd-isp-status-msg\" style=\"margin-top:6px; font-size:12px; min-height:16px; white-space:pre-wrap; text-align:left; color:#94a3b8;\"></div>' +"
-        "        '</div>';"
+        "    setRealtekLock(false);"
+        "    if(xhr.status === 200){"
+        "      try {"
+        "        const d = JSON.parse(xhr.responseText);"
+        "        progressBar.style.width = '100%%';"
+        "        progressText.innerText = '100%% (전송 완료)';"
+        "        statusMsg.style.color = '#4ade80';"
+        "        statusMsg.innerText = '⚡ Realtek 펌웨어(' + d.filename + ') 100%% 무결성 저장 성공!';"
+        "        const el = document.getElementById('stored-fw-container');"
+        "        if(el){"
+        "          el.innerHTML = '<div style=\"text-align: left; background: #0b132b; padding: 8px; border-radius: 6px; border: 1px solid #3a506b; font-size: 12px;\">' +"
+        "            '<div style=\"margin-bottom: 4px;\"><strong>📁 저장된 파일명:</strong> <span style=\"color: #cbd5e1; word-break: break-all;\">' + d.filename + '</span></div>' +"
+        "            '<div style=\"margin-bottom: 4px;\"><strong>📊 저장된 용량:</strong> <span style=\"color: #4ade80;\">' + d.size.toLocaleString() + ' Bytes (' + d.size_kb + ' KB)</span></div>' +"
+        "            '<div style=\"margin-bottom: 4px;\"><strong>🏷 Big Bin Checksum (RTDTool v3.1.3):</strong> <span style=\"color: #5bc0be; font-weight: bold; font-family: monospace;\">' + d.big_bin + '</span></div>' +"
+        "            '<div style=\"margin-bottom: 6px;\"><strong>🔢 32-bit Byte Sum Checksum (RTDTool v3.8):</strong> <span style=\"color: #facc15; font-weight: bold; font-family: monospace;\">' + d.sum32 + '</span></div>' +"
+        "            '<div style=\"display:flex; gap:6px; margin-top:8px; flex-wrap:wrap;\">' +"
+        "            '<button onclick=\"pingRtdScaler(); return false;\" class=\"btn\" style=\"background:#0284c7; padding:6px 10px; font-size:11px; font-weight:bold;\">📡 I2C 통신 확인</button>' +"
+        "            '<button onclick=\"flashRtdScaler(); return false;\" id=\"rtdFlashBtn\" class=\"btn\" style=\"background:#22c55e; padding:6px 12px; font-size:11px; font-weight:bold;\">⚡ 스케일러 ISP 플래시 시작</button>' +"
+        "            '<button onclick=\"clearStoredFirmware(); return false;\" style=\"background:#ef4444; color:#fff; border:none; padding:6px 8px; border-radius:6px; font-size:11px; font-weight:bold; cursor:pointer;\">🗑 초기화</button>' +"
+        "            '</div>' +"
+        "            '<div id=\"rtd-isp-progress-container\" style=\"display:none; margin-top:8px; background:#0b132b; border-radius:6px; border:1px solid #3a506b; height:16px; position:relative; overflow:hidden;\"><div id=\"rtd-isp-progress-bar\" style=\"width:0%%; height:100%%; background:linear-gradient(90deg,#22c55e,#5bc0be); transition: width 0.2s;\"></div><div id=\"rtd-isp-progress-text\" style=\"position:absolute; width:100%%; top:0; left:0; line-height:16px; font-size:10px; font-weight:bold; color:#fff; text-align:center;\">0%%</div></div>' +"
+        "            '<div id=\"rtd-isp-status-msg\" style=\"margin-top:6px; font-size:12px; min-height:16px; white-space:pre-wrap; text-align:left; color:#94a3b8;\"></div>' +"
+        "            '</div>';"
+        "        }"
+        "      } catch(e) {"
+        "        statusMsg.style.color = '#ef4444';"
+        "        statusMsg.innerText = '❌ 응답 데이터 파싱 실패: ' + xhr.responseText;"
+        "      }"
+        "    } else {"
+        "      statusMsg.style.color = '#ef4444';"
+        "      statusMsg.innerText = '❌ 업로드 실패 (' + xhr.status + '): ' + xhr.responseText;"
         "    }"
-        "  } catch(err){"
+        "  };"
+        "  xhr.onerror = function(){"
         "    btn.disabled = false; btn.style.opacity = '1';"
+        "    setRealtekLock(false);"
         "    statusMsg.style.color = '#ef4444';"
-        "    statusMsg.innerText = '❌ 전송 오류: ' + err.message;"
-        "  }"
+        "    statusMsg.innerText = '❌ 전송 중 네트워크 연결 오류가 발생했습니다.';"
+        "  };"
+        "  xhr.send(file);"
         "}"
         "function pingRtdScaler(){"
         "  const msg = document.getElementById('rtd-isp-status-msg');"
@@ -566,7 +831,9 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "  });"
         "}"
         "function flashRtdScaler(){"
+        "  if(isPicoOtaBusy) return alert('⚠️ [작업 차단] Pico 2 이더넷 OTA가 진행 중입니다!\\n\\nOTA 완료 후 Realtek 스케일러 플래싱을 진행해주세요.');"
         "  if(!confirm('Pico 2에 저장된 Realtek 펌웨어를 Channel 2 (GP2:SCL, GP3:SDA)를 통해 실제 Realtek 스케일러 칩에 플래싱하시겠습니까?')) return;"
+        "  setRealtekLock(true);"
         "  const btn = document.getElementById('rtdFlashBtn');"
         "  const msg = document.getElementById('rtd-isp-status-msg');"
         "  const progContainer = document.getElementById('rtd-isp-progress-container');"
@@ -597,6 +864,7 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "  .then(d => {"
         "    clearInterval(progTimer);"
         "    if(btn){ btn.disabled = false; btn.style.opacity = '1'; }"
+        "    setRealtekLock(false);"
         "    if(d.success){"
         "      if(progBar){ progBar.style.width = '100%%'; }"
         "      if(progText){ progText.innerText = '100%% (플래시 완료)'; }"
@@ -607,10 +875,12 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "  }).catch(e => {"
         "    clearInterval(progTimer);"
         "    if(btn){ btn.disabled = false; btn.style.opacity = '1'; }"
+        "    setRealtekLock(false);"
         "    if(msg){ msg.style.color = '#ef4444'; msg.innerText = '❌ 플래시 통신 오류 발생!'; }"
         "  });"
         "}"
         "function uploadPicoOta(){"
+        "  if(isRealtekBusy) return alert('⚠️ [작업 차단] Realtek 펌웨어 작업(업로드 또는 ISP 플래싱)이 진행 중입니다!\\n\\n해당 작업 완료 후 Pico 2 OTA를 진행해주세요.');"
         "  const file = document.getElementById('picoOtaFile').files[0];"
         "  if(!file) return alert('Pico 2 펌웨어(.bin/.uf2) 파일을 선택해주세요!');"
         "  const reader = new FileReader();"
@@ -624,34 +894,92 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "    const fname = file.name.toLowerCase();"
         "    const is_realtek = fname.includes('dh9') || fname.includes('rlt') || fname.includes('dlc') || (u8[0] === 0x02 || u8[0] === 0x12);"
         "    if(!is_uf2 && !is_rp2350_bin && is_realtek){"
-        "      alert('⚠️ [안전 차단] 선택하신 파일(' + file.name + ')은 Realtek 스케일러 펌웨어입니다!\\n\\nPico 2 OTA 카드에는 Pico 2 전용 펌웨어(w5500_pico2_firmware.bin/.uf2)만 업로드할 수 있습니다.');"
+        "      alert('⚠️ [안전 차단] 선택하신 파일(' + file.name + ')은 Realtek 스케일러 펌웨어입니다!\\n\\nPico 2 OTA 카드에는 Pico 2 전용 펌웨어만 업로드할 수 있습니다.');"
+        "      return;"
+        "    }"
+        "    function showSuccess(msg){"
+        "      if(window.statusTimer){ clearInterval(window.statusTimer); window.statusTimer = null; }"
+        "      statusMsg.style.color = '#4ade80';"
+        "      let cnt = 7;"
+        "      statusMsg.innerText = (msg || '🚀 Pico 2 이더넷 OTA 펌웨어 업로드 성공!') + '\\n\\n⚡ 새 펌웨어 플래시 적용 및 재부팅 중 (' + cnt + '초)...';"
+        "      const timer = setInterval(() => {"
+        "        cnt--;"
+        "        if(cnt > 0){"
+        "          statusMsg.innerText = (msg || '🚀 Pico 2 이더넷 OTA 펌웨어 업로드 성공!') + '\\n\\n⚡ 새 펌웨어 플래시 적용 및 재부팅 중 (' + cnt + '초)...';"
+        "        } else {"
+        "          clearInterval(timer);"
+        "          statusMsg.innerText = '⚡ 새 펌웨어 온라인 통신 확인 중...';"
+        "          let pollCount = 0;"
+        "          let isProbing = false;"
+        "          const pollTimer = setInterval(() => {"
+        "            if(isProbing) return;"
+        "            pollCount++;"
+        "            isProbing = true;"
+        "            const ctrl = (typeof AbortController !== 'undefined') ? new AbortController() : null;"
+        "            const toId = ctrl ? setTimeout(() => ctrl.abort(), 1200) : null;"
+        "            const fetchOpts = ctrl ? { signal: ctrl.signal, cache: 'no-store' } : { cache: 'no-store' };"
+        "            fetch('/api/status?t=' + Date.now(), fetchOpts)"
+        "              .then(r => {"
+        "                if(toId) clearTimeout(toId);"
+        "                isProbing = false;"
+        "                if(r.ok) {"
+        "                  clearInterval(pollTimer);"
+        "                  statusMsg.innerText = '🎉 새 펌웨어 온라인 연결 성공! 화면을 갱신합니다...';"
+        "                  setTimeout(() => {"
+        "                    window.location.href = '/?t=' + Date.now();"
+        "                  }, 200);"
+        "                }"
+        "              })"
+        "              .catch(e => {"
+        "                if(toId) clearTimeout(toId);"
+        "                isProbing = false;"
+        "                statusMsg.innerText = '⚡ 새 펌웨어 온라인 대기 중... (' + pollCount + '초 경과)';"
+        "                if(pollCount >= 25) {"
+        "                  statusMsg.innerHTML = '⚡ 새 펌웨어 온라인 대기 중... (' + pollCount + '초 경과)<br><br>' +"
+        "                    '<button onclick=\"window.location.href=\\'/?t=\\' + Date.now();\" class=\"btn\" style=\"background:#0284c7; padding:6px 14px; font-size:12px; font-weight:bold;\">🔄 지금 바로 접속 시도</button>';"
+        "                }"
+        "              });"
+        "          }, 1000);"
+        "        }"
+        "      }, 1000);"
+        "    }"
+        "    const currentChip = '" ETH_CHIP_NAME "';"
+        "    const oppositeChip = '" OPPOSITE_CHIP_NAME "';"
+        "    const oppositeTag = atob('" OPPOSITE_CHIP_TAG_B64 "');"
+        "    if(fname.includes(oppositeChip.toLowerCase())){"
+        "      alert('❌ [칩셋 파일명 불일치 차단]\\n\\n현재 장비는 ' + currentChip + ' 보드입니다!\\n\\n선택하신 파일(' + file.name + ')은 ' + oppositeChip + ' 전용 펌웨어이므로, 장비 통신 먹통(벽돌) 방지를 위해 업로드가 안전하게 차단되었습니다.\\n\\n👉 올바른 ' + currentChip + ' 전용 펌웨어를 선택해주세요.');"
+        "      return;"
+        "    }"
+        "    const tagBytes = new TextEncoder().encode(oppositeTag);"
+        "    const tLen = tagBytes.length;"
+        "    let tagFound = false;"
+        "    for(let i = 0; i <= u8.length - tLen; i++){"
+        "      if(u8[i] === tagBytes[0]){"
+        "        let match = true;"
+        "        for(let j = 1; j < tLen; j++){"
+        "          if(u8[i+j] !== tagBytes[j]){ match = false; break; }"
+        "        }"
+        "        if(match){ tagFound = true; break; }"
+        "      }"
+        "    }"
+        "    if(tagFound){"
+        "      alert('❌ [바이너리 칩셋 서명(Signature) 사전 차단!]\\n\\n현재 장비: ' + currentChip + ' 보드\\n업로드 파일: ' + file.name + '\\n검출된 서명: ' + oppositeChip + ' 전용 바이너리 (' + oppositeTag + ')\\n\\n⚠️ 파일명을 변경하였더라도 내부 바이너리 서명이 달라 통신 불가(벽돌) 위험이 있습니다.\\n펌웨어 업로드가 사전에 안전하게 차단되었습니다!');"
         "      return;"
         "    }"
         "    if(!confirm('Pico 2 보드를 이더넷 OTA 원격 펌웨어로 업데이트하고 자동 재부팅하시겠습니까?')) return;"
+        "    setPicoOtaLock(true);"
         "    const btn = document.getElementById('picoOtaBtn');"
         "    const statusMsg = document.getElementById('pico-ota-status-msg');"
         "    const progressContainer = document.getElementById('pico-ota-progress-container');"
         "    const progressBar = document.getElementById('pico-ota-progress-bar');"
         "    const progressText = document.getElementById('pico-ota-progress-text');"
-        "    btn.disabled = true; btn.style.opacity = '0.5';"
-        "    progressContainer.style.display = 'block';"
-        "    statusMsg.style.color = '#0284c7';"
-        "    statusMsg.innerText = '🚀 Pico 2 이더넷 OTA 펌웨어 전송 중...';"
+        "    if(btn){ btn.disabled = true; btn.style.opacity = '0.5'; }"
+        "    if(progressContainer) progressContainer.style.display = 'block';"
+        "    if(progressBar) progressBar.style.width = '0%%';"
+        "    if(progressText) progressText.innerText = '0%% (전송 시작 중...)';"
+        "    if(statusMsg){ statusMsg.style.color = '#38bdf8'; statusMsg.innerText = '🚀 Pico 2 이더넷 OTA 펌웨어 전송을 시작합니다... (용량: ' + (file.size/1024).toFixed(1) + ' KB)'; }"
         "    let uploadDone = false;"
-        "    function showSuccess(msg){"
-        "      statusMsg.style.color = '#4ade80';"
-        "      let cnt = 4;"
-        "      statusMsg.innerText = (msg || '🚀 Pico 2 이더넷 OTA 펌웨어 업로드 성공!') + '\\n\\n⚡ ' + cnt + '초 후 새 버전으로 자동 연결됩니다...';"
-        "      const timer = setInterval(() => {"
-        "        cnt--;"
-        "        if(cnt >= 0){"
-        "          statusMsg.innerText = (msg || '🚀 Pico 2 이더넷 OTA 펌웨어 업로드 성공!') + '\\n\\n⚡ ' + cnt + '초 후 새 버전으로 자동 연결됩니다...';"
-        "        } else {"
-        "          clearInterval(timer);"
-        "          location.reload();"
-        "        }"
-        "      }, 1000);"
-        "    }"
+        "    let lastPct = 0;"
         "    const xhr = new XMLHttpRequest();"
         "    xhr.open('POST', '/upload_pico_fw?name=' + encodeURIComponent(file.name), true);"
         "    xhr.setRequestHeader('Content-Type', 'application/octet-stream');"
@@ -659,23 +987,26 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "    xhr.upload.onprogress = function(e){"
         "      if(e.lengthComputable){"
         "        const pct = Math.round((e.loaded / e.total) * 100);"
+        "        lastPct = pct;"
         "        progressBar.style.width = pct + '%%';"
         "        progressText.innerText = pct + '%% (' + (e.loaded / 1024).toFixed(0) + ' KB / ' + (e.total / 1024).toFixed(0) + ' KB)';"
-        "        if(pct >= 100) uploadDone = true;"
+        "        if(pct >= 95) uploadDone = true;"
         "      } };"
         "    xhr.onload = function(){"
         "      btn.disabled = false; btn.style.opacity = '1';"
         "      if(xhr.status === 200){"
         "        showSuccess(xhr.responseText);"
         "      } else {"
+        "        setPicoOtaLock(false);"
         "        statusMsg.style.color = '#ef4444';"
         "        statusMsg.innerText = '❌ OTA 업로드 실패: ' + xhr.responseText;"
         "      } };"
         "    xhr.onerror = function(){"
-        "      if(uploadDone){"
+        "      if(uploadDone || lastPct >= 90){"
         "        showSuccess('🚀 Pico 2 이더넷 OTA 전송 완료! (재부팅 적용 중...)');"
         "      } else {"
         "        btn.disabled = false; btn.style.opacity = '1';"
+        "        setPicoOtaLock(false);"
         "        statusMsg.style.color = '#ef4444';"
         "        statusMsg.innerText = '❌ 네트워크 오류 발생!';"
         "      } };"
@@ -903,8 +1234,8 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "</head>"
         "<body onload=\"startTimers(); renderCustomMacros();\">"
         "<div class=\"top-bar\">"
-        "<div class=\"brand\"><span class=\"logo-box\">DH</span> DHUB PICO2 SYSTEM</div>"
-        "<div class=\"title-banner\">DHUB-2026S SYSTEM CONTROLLER</div>"
+        "<div class=\"brand\"><span class=\"logo-box\">DH</span> DHUB PICO2 SYSTEM <span style=\"background:" ETH_CHIP_BADGE_COLOR "; color:#fff; font-size:11px; padding:2px 8px; border-radius:10px; font-weight:bold; letter-spacing:0.5px; margin-left:6px;\">" ETH_CHIP_NAME "</span></div>"
+        "<div class=\"title-banner\">DHUB-2026S SYSTEM CONTROLLER (" BOARD_HW_NAME ")</div>"
         "<div class=\"clock-container\">"
         "<div class=\"clock\" id=\"liveClock\">Loading...</div>"
         "<div class=\"uptime\" id=\"liveUptime\">⏱ Uptime: %02lud %02luh %02lum %02lus</div>"
@@ -933,8 +1264,9 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "<div class=\"welcome-card\" id=\"overview-section\">"
         "<h2>Welcome!</h2>"
         "<div class=\"info-grid\">"
-        "<div><strong>Version:</strong> <span style=\"color:#6fffe9; font-weight:bold;\">" FIRMWARE_VERSION "</span></div><div><strong>LCD Controller:</strong> Saffron</div><div><strong>On Time(dpms):</strong> <span id=\"onTimeDpms\">00:00(00:00)</span></div>"
-        "<div><strong>Build Date:</strong> " __DATE__ "</div><div><strong>Board Status:</strong> Display Port</div><div><strong>Output:</strong> ON(12V/24V)</div>"
+        "<div><strong>Version:</strong> <span style=\"color:#6fffe9; font-weight:bold;\">" FIRMWARE_VERSION "</span></div><div><strong>Ethernet Chip:</strong> <span style=\"color:#38bdf8; font-weight:bold;\">" ETH_CHIP_NAME " (" ETH_CHIP_DESC ")</span></div><div><strong>Hardware:</strong> " BOARD_HW_NAME "</div>"
+        "<div><strong>Build Date:</strong> " __DATE__ "</div><div><strong>LCD Controller:</strong> Saffron</div><div><strong>On Time(dpms):</strong> <span id=\"onTimeDpms\">00:00(00:00)</span></div>"
+        "<div><strong>Board Status:</strong> Display Port</div><div><strong>Output:</strong> ON(12V/24V)</div>"
         "</div>"
         "<div class=\"voltages\">"
         "<span>12V : 11.9 V</span><span>24V : 22.9 V</span><span>5V : 4.8 V</span>"
@@ -952,13 +1284,16 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         
         // --- Left Card: Pico 2 Ethernet OTA ---
         "<div class=\"card\" style=\"border: 2px solid #0284c7; background: #111e38;\">"
-        "<h3 style=\"color: #38bdf8; border-bottom: 1px solid #0284c7; padding-bottom: 6px;\">🚀 [Pico 2 전용] 이더넷 OTA 원격 업데이트 <span style=\"background:#0284c7; color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; margin-left:6px; font-weight:bold;\">Pico 2 OS</span></h3>"
-        "<div style=\"font-size: 12px; color: #cbd5e1; margin-bottom: 10px; text-align: left; line-height: 1.4;\">"
-        "W5500 이더넷 네트워크로 Pico 2 자체 펌웨어(<code>.bin</code> / <code>.uf2</code>)를 업로드하여 원격으로 교체하고 자동 재부팅합니다."
+        "<h3 style=\"color: #38bdf8; border-bottom: 1px solid #0284c7; padding-bottom: 6px;\">🚀 [Pico 2 전용] 이더넷 OTA 원격 업데이트 <span style=\"background:" ETH_CHIP_BADGE_COLOR "; color:#fff; font-size:10px; padding:2px 6px; border-radius:4px; margin-left:6px; font-weight:bold;\">" ETH_CHIP_NAME " Pico 2 OS</span></h3>"
+        "<div style=\"font-size: 12px; color: #cbd5e1; margin-bottom: 6px; text-align: left; line-height: 1.4;\">"
+        ETH_CHIP_NAME " 이더넷 네트워크로 Pico 2 자체 펌웨어(<code>.bin</code>)를 업로드하여 원격으로 교체하고 자동 재부팅합니다."
         "</div>"
-        "<div style=\"text-align: left;\"><label style=\"font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;\">📁 업로드할 Pico 2 펌웨어 선택 (.bin / .uf2):</label>"
-        "<input type=\"file\" id=\"picoOtaFile\" class=\"file-input\" accept=\".bin,.uf2\" style=\"border-color: #0284c7;\">"
-        "<button onclick=\"uploadPicoOta()\" id=\"picoOtaBtn\" class=\"btn\" style=\"background:#0284c7; width:100%%; margin-top:8px; padding:9px; font-size:13px; font-weight:bold; cursor:pointer;\">🚀 Pico 2 이더넷 OTA 펌웨어 업로드 &amp; 원격 재부팅</button></div>"
+        "<div style=\"font-size: 11px; color: #38bdf8; background: #0c1c38; padding: 4px 8px; border-radius: 4px; border: 1px solid #0284c7; margin-bottom: 10px; text-align: left;\">"
+        "🛡️ <strong>하드웨어 서명 보호 활성화:</strong> " ETH_CHIP_NAME " 전용 바이너리 서명 자동 검사 (" OPPOSITE_CHIP_NAME " 교차 업로드 원천 차단)"
+        "</div>"
+        "<div style=\"text-align: left;\"><label style=\"font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;\">📁 업로드할 Pico 2 펌웨어 선택 (<code>.bin</code> 전용):</label>"
+        "<input type=\"file\" id=\"picoOtaFile\" class=\"file-input\" accept=\".bin\" onchange=\"handlePicoFileSelect(event)\" style=\"border-color: #0284c7;\">"
+        "<button onclick=\"uploadPicoOta()\" id=\"picoOtaBtn\" class=\"btn\" style=\"background:#0284c7; width:100%%; margin-top:8px; padding:9px; font-size:13px; font-weight:bold; cursor:pointer;\">🚀 Pico 2 (" ETH_CHIP_NAME ") 이더넷 OTA 펌웨어 업로드 &amp; 원격 재부팅</button></div>"
         "<div id=\"pico-ota-progress-container\" style=\"display:none; margin-top:8px; background:#0b132b; border-radius:6px; border:1px solid #0284c7; height:16px; position:relative; overflow:hidden;\"><div id=\"pico-ota-progress-bar\" style=\"width:0%%; height:100%%; background:linear-gradient(90deg,#0284c7,#5bc0be);\"></div><div id=\"pico-ota-progress-text\" style=\"position:absolute; width:100%%; top:0; left:0; line-height:16px; font-size:10px; font-weight:bold; color:#fff; text-align:center;\">0%%</div></div>"
         "<div id=\"pico-ota-status-msg\" style=\"margin-top:6px; font-size:12px; min-height:16px; white-space:pre-wrap; text-align:left;\"></div>"
         "</div>"
@@ -1001,8 +1336,8 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "</div></div>");
 
     snprintf(buf + strlen(buf), max_len - strlen(buf),
-        "<div style=\"margin-top: 8px; text-align: left;\"><label style=\"font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;\">📁 업로드할 Realtek 펌웨어 파일 선택:</label>"
-        "<input type=\"file\" id=\"fwFile\" class=\"file-input\" accept=\".bin,.hex,.uf2\" onchange=\"handleFileSelect(event)\" style=\"border-color:#22c55e;\">"
+        "<div style=\"margin-top: 8px; text-align: left;\"><label style=\"font-size: 12px; color: #94a3b8; display: block; margin-bottom: 4px;\">📁 업로드할 Realtek 펌웨어 파일 선택 (.bin / .hex):</label>"
+        "<input type=\"file\" id=\"fwFile\" class=\"file-input\" accept=\".bin,.hex\" onchange=\"handleFileSelect(event)\" style=\"border-color:#22c55e;\">"
         "<button onclick=\"uploadFirmware()\" id=\"uploadBtn\" class=\"btn\" style=\"background:#22c55e; width:100%%; margin-top:8px; padding:9px; font-size:13px; font-weight:bold; cursor:pointer;\">⚡ Pico 2 플래시 메모리에 고속 전송</button>"
         "<div id=\"selected-file-info\" style=\"margin-top:6px;\"></div>"
         "<div id=\"progress-container\"><div id=\"progress-bar\"></div><div id=\"progress-text\">0%%</div></div>"
@@ -1091,12 +1426,59 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "</div>"
 
         // 5. LED Control Section & Generic Fallback Card
-        "<div class=\"card\" id=\"led_ctrl-section\" style=\"display: none; border: 1px solid #0284c7;\">"
-        "<h3>💡 Pico 2 (RP2350A) 온보드 LED 제어</h3>"
-        "<div style=\"font-size: 13px; margin-bottom: 8px;\">LED 상태: <strong id=\"ledStateVal\" style=\"color: %s;\">%s</strong></div>"
-        "<div class=\"btn-group\">"
-        "<button onclick=\"toggleLed(1); return false;\" class=\"btn btn-on\" style=\"padding: 8px 24px; font-weight: bold; cursor: pointer;\">LED ON</button>"
-        "<button onclick=\"toggleLed(0); return false;\" class=\"btn btn-off\" style=\"padding: 8px 24px; font-weight: bold; cursor: pointer;\">LED OFF</button>"
+        "<div class=\"card\" id=\"led_ctrl-section\" style=\"display: none; border: 2px solid #0284c7; background: #0f172a; padding: 20px;\">"
+        "<div style=\"display:flex; justify-content:space-between; align-items:center; border-bottom:1px solid #334155; padding-bottom:12px; margin-bottom:16px;\">"
+        "<div>"
+        "<h3 style=\"margin:0; font-size:18px; color:#38bdf8; display:flex; align-items:center; gap:8px;\">💡 Pico 2 온보드 LED 하드웨어 제어 센터</h3>"
+        "<div style=\"color:#94a3b8; font-size:11px; margin-top:3px;\">RP2350A ARM Cortex-M33 Pin GP25 (Onboard Green LED) • 50us 초저지연 타이머 엔진 연동</div>"
+        "</div>"
+        "<div style=\"display:flex; align-items:center; gap:12px; background:#1e293b; padding:6px 14px; border-radius:30px; border:1px solid #3a506b;\">"
+        "<div id=\"ledBulbVisual\" style=\"width:18px; height:18px; border-radius:50%%; background:%s; border:2px solid %s; box-shadow:%s; transition:all 0.15s;\"></div>"
+        "<span style=\"font-size:13px; font-weight:bold; color:%s;\" id=\"ledStateVal\">%s</span>"
+        "</div>"
+        "</div>"
+        "<div style=\"display:grid; grid-template-columns:repeat(auto-fit, minmax(200px, 1fr)); gap:12px; margin-bottom:18px;\">"
+        "<div style=\"background:#1e293b; padding:12px; border-radius:8px; border:1px solid #334155;\">"
+        "<div style=\"font-size:11px; color:#94a3b8;\">현재 동작 모드 (Active Mode)</div>"
+        "<div style=\"font-size:14px; font-weight:bold; color:#6fffe9; margin-top:4px;\" id=\"ledCurrentModeText\">%s</div>"
+        "</div>"
+        "<div style=\"background:#1e293b; padding:12px; border-radius:8px; border:1px solid #334155;\">"
+        "<div style=\"font-size:11px; color:#94a3b8;\">점멸 주기 (Blink Period)</div>"
+        "<div style=\"font-size:14px; font-weight:bold; color:#facc15; margin-top:4px;\" id=\"ledCurrentIntervalText\">%lu ms</div>"
+        "</div>"
+        "<div style=\"background:#1e293b; padding:12px; border-radius:8px; border:1px solid #334155;\">"
+        "<div style=\"font-size:11px; color:#94a3b8;\">제어 GPIO 핀 할당</div>"
+        "<div style=\"font-size:14px; font-weight:bold; color:#38bdf8; margin-top:4px;\">GP25 (Active High)</div>"
+        "</div>"
+        "</div>"
+        "<div style=\"background:#111e38; padding:15px; border-radius:10px; border:1px solid #0284c7; margin-bottom:14px;\">"
+        "<div style=\"font-size:13px; font-weight:bold; color:#38bdf8; margin-bottom:6px; display:flex; align-items:center; gap:6px;\">⚡ 1. 하트비트 점멸 주기 선택 (Auto Heartbeat)</div>"
+        "<div style=\"font-size:11px; color:#94a3b8; margin-bottom:10px;\">보드 생존 상태를 알리는 하트비트 주기를 실시간으로 변경합니다.</div>"
+        "<div style=\"display:flex; gap:8px; flex-wrap:wrap;\">"
+        "<button onclick=\"setLedMode('blink', 100); return false;\" class=\"btn\" style=\"background:#0284c7; padding:8px 14px; font-size:12px;\">⚡ 100ms (초고속)</button>"
+        "<button onclick=\"setLedMode('blink', 250); return false;\" class=\"btn\" style=\"background:#0284c7; padding:8px 14px; font-size:12px;\">⚡ 250ms (고속)</button>"
+        "<button onclick=\"setLedMode('blink', 500); return false;\" class=\"btn\" style=\"background:#22c55e; padding:8px 14px; font-size:12px; font-weight:bold;\">⚡ 500ms (기본 표준)</button>"
+        "<button onclick=\"setLedMode('blink', 1000); return false;\" class=\"btn\" style=\"background:#0284c7; padding:8px 14px; font-size:12px;\">⚡ 1000ms (여유)</button>"
+        "<button onclick=\"setLedMode('blink', 2000); return false;\" class=\"btn\" style=\"background:#0284c7; padding:8px 14px; font-size:12px;\">⚡ 2000ms (저속)</button>"
+        "</div>"
+        "</div>"
+        "<div style=\"display:grid; grid-template-columns:repeat(auto-fit, minmax(280px, 1fr)); gap:12px;\">"
+        "<div style=\"background:#111e38; padding:15px; border-radius:10px; border:1px solid #334155;\">"
+        "<div style=\"font-size:13px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;\">💡 2. 수동 점등 / 소등 제어 (Manual Hold)</div>"
+        "<div style=\"font-size:11px; color:#94a3b8; margin-bottom:10px;\">하트비트를 정지하고 LED를 켜거나 끕니다.</div>"
+        "<div style=\"display:flex; gap:8px;\">"
+        "<button onclick=\"setLedMode('on'); return false;\" class=\"btn btn-on\" style=\"flex:1; padding:10px; font-size:13px; font-weight:bold;\">🟢 상시 켜기 (ON)</button>"
+        "<button onclick=\"setLedMode('off'); return false;\" class=\"btn btn-off\" style=\"flex:1; padding:10px; font-size:13px; font-weight:bold;\">🔴 상시 끄기 (OFF)</button>"
+        "</div>"
+        "</div>"
+        "<div style=\"background:#111e38; padding:15px; border-radius:10px; border:1px solid #334155;\">"
+        "<div style=\"font-size:13px; font-weight:bold; color:#cbd5e1; margin-bottom:6px;\">🚨 3. 특수 신호 모드 (Special Functions)</div>"
+        "<div style=\"font-size:11px; color:#94a3b8; margin-bottom:10px;\">비상 신호 또는 서버 랙 내 위치 식별용 모드입니다.</div>"
+        "<div style=\"display:flex; gap:8px;\">"
+        "<button onclick=\"setLedMode('sos'); return false;\" class=\"btn\" style=\"flex:1; background:#ef4444; padding:10px; font-size:12px; font-weight:bold;\">🆘 SOS 모스부호</button>"
+        "<button onclick=\"setLedMode('beacon'); return false;\" class=\"btn\" style=\"flex:1; background:#eab308; color:#000; padding:10px; font-size:12px; font-weight:bold;\">📍 기기 위치 식별</button>"
+        "</div>"
+        "</div>"
         "</div>"
         "</div>"
         "<div class=\"card\" id=\"generic-section\" style=\"display: none;\">"
@@ -1106,8 +1488,16 @@ static void build_html_page(char *buf, size_t max_len, float cpu_temp, bool led_
         "</div>"
         "</div>"
         "</div>",
+        led_state ? "#22c55e" : "#1e293b",
+        led_state ? "#4ade80" : "#475569",
+        led_state ? "0 0 25px #22c55e, 0 0 50px rgba(34,197,94,0.7)" : "none",
         led_state ? "#4ade80" : "#ef4444",
-        led_state ? "ON 🟢" : "OFF 🔴");
+        led_state ? "ON 🟢" : "OFF 🔴",
+        (g_led_mode == LED_MODE_BLINK) ? "⚡ 하트비트 점멸 (Auto Blink)" :
+        (g_led_mode == LED_MODE_MANUAL_ON) ? "💡 상시 점등 (ON)" :
+        (g_led_mode == LED_MODE_MANUAL_OFF) ? "🛑 상시 소등 (OFF)" :
+        (g_led_mode == LED_MODE_SOS) ? "🆘 SOS 긴급 모스부호" : "📍 비컨 식별",
+        (unsigned long)g_led_blink_interval_ms);
 
     // 5. Right Gauge Panel & Footer
     snprintf(buf + strlen(buf), max_len - strlen(buf),
@@ -1185,8 +1575,9 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
         uint32_t uptime_sec = (uint32_t)(time_us_64() / 1000000ULL);
         char json_buf[256];
         int json_len = snprintf(json_buf, sizeof(json_buf),
-            "{\"uptime_sec\":%lu,\"cpu_temp\":%.1f,\"led_state\":%d}",
-            (unsigned long)uptime_sec, cpu_temp, *led_state ? 1 : 0);
+            "{\"version\":\"" FIRMWARE_VERSION "\",\"uptime_sec\":%lu,\"cpu_temp\":%.1f,\"led_state\":%d,\"led_mode\":%d,\"led_interval\":%lu,\"eth_chip\":\"" ETH_CHIP_NAME "\",\"board\":\"" BOARD_HW_NAME "\",\"ota_busy\":%s,\"rtd_busy\":%s}",
+            (unsigned long)uptime_sec, cpu_temp, *led_state ? 1 : 0, (int)g_led_mode, (unsigned long)g_led_blink_interval_ms,
+            g_pico_ota_busy ? "true" : "false", g_rtd_busy ? "true" : "false");
 
         char header[256];
         int header_len = snprintf(header, sizeof(header),
@@ -1200,21 +1591,35 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
     }
 
     if (strstr((const char*)request_buf, "GET /api/led") != NULL) {
-        if (strstr((const char*)request_buf, "state=1") != NULL || strstr((const char*)request_buf, "state=on") != NULL) {
+        if (strstr((const char*)request_buf, "mode=blink") != NULL || strstr((const char*)request_buf, "mode=auto") != NULL) {
+            g_led_mode = LED_MODE_BLINK;
+        } else if (strstr((const char*)request_buf, "mode=on") != NULL || strstr((const char*)request_buf, "state=1") != NULL) {
+            g_led_mode = LED_MODE_MANUAL_ON;
             *led_state = true;
             gpio_put(PIN_LED, 1);
-            gpio_put(22, 1);
-            gpio_put(2, 1);
-            gpio_put(15, 1);
-        } else if (strstr((const char*)request_buf, "state=0") != NULL || strstr((const char*)request_buf, "state=off") != NULL) {
+        } else if (strstr((const char*)request_buf, "mode=off") != NULL || strstr((const char*)request_buf, "state=0") != NULL) {
+            g_led_mode = LED_MODE_MANUAL_OFF;
             *led_state = false;
             gpio_put(PIN_LED, 0);
-            gpio_put(22, 0);
-            gpio_put(2, 0);
-            gpio_put(15, 0);
+        } else if (strstr((const char*)request_buf, "mode=sos") != NULL) {
+            g_led_mode = LED_MODE_SOS;
+        } else if (strstr((const char*)request_buf, "mode=beacon") != NULL) {
+            g_led_mode = LED_MODE_BEACON;
         }
-        char json_buf[128];
-        int json_len = snprintf(json_buf, sizeof(json_buf), "{\"success\":true,\"led_state\":%d}", *led_state ? 1 : 0);
+
+        const char *p_interval = strstr((const char*)request_buf, "interval=");
+        if (p_interval) {
+            uint32_t val = (uint32_t)strtoul(p_interval + 9, NULL, 10);
+            if (val >= 50 && val <= 10000) {
+                g_led_blink_interval_ms = val;
+                g_led_mode = LED_MODE_BLINK;
+            }
+        }
+
+        char json_buf[160];
+        int json_len = snprintf(json_buf, sizeof(json_buf),
+            "{\"success\":true,\"led_state\":%d,\"mode\":%d,\"interval\":%lu}",
+            *led_state ? 1 : 0, (int)g_led_mode, (unsigned long)g_led_blink_interval_ms);
         char header[256];
         int header_len = snprintf(header, sizeof(header),
             "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
@@ -1229,8 +1634,8 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
         g_fw_info.has_firmware = false;
         memset(g_fw_info.filename, 0, sizeof(g_fw_info.filename));
         g_fw_info.size_bytes = 0;
-        strcpy(g_fw_info.big_bin_checksum, "?ì?ì");
-        strcpy(g_fw_info.sum32_checksum, "?ì?ì");
+        strcpy(g_fw_info.big_bin_checksum, "미수행");
+        strcpy(g_fw_info.sum32_checksum, "미수행");
 
         // Clear stored metadata in flash
         safe_flash_erase(FLASH_INFO_OFFSET, FLASH_SECTOR_SIZE);
@@ -1243,11 +1648,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
             json_len);
         w5500_send_tx_data(0, (const uint8_t*)header, header_len);
         w5500_send_tx_data(0, (const uint8_t*)json_buf, json_len);
-        sleep_ms(20);
         w5500_disconnect_socket(0);
-        sleep_ms(10);
-        w5500_close_socket(0);
-        w5500_listen_server(HTTP_PORT);
         return;
     }
 
@@ -1258,7 +1659,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
             "{\"success\":true,\"connected\":%s,\"channel\":2,\"scl\":\"GP2\",\"sda\":\"GP3\",\"addr\":\"0x4A\","
             "\"message\":\"%s\"}",
             connected ? "true" : "false",
-            connected ? "??Realtek ?¤ì??¼ë¬(0x4A) ?µì  ?ì (I2C ACK ?ëµ ?ì¸, ?ë©´ ?ì ? ì?)" : "??Realtek ?¤ì??¼ë¬(0x4A) ?ëµ ?ì (GP2/GP3 ë°°ì  ?ì¸ ?ì)");
+            connected ? "▶ Realtek 스케일러(0x4A) 통신 정상 (I2C ACK 응답 확인, 화면 정상 제어)" : "⚠ Realtek 스케일러(0x4A) 응답 없음 (GP2/GP3 배선 확인 필요)");
 
         char header[256];
         int header_len = snprintf(header, sizeof(header),
@@ -1267,11 +1668,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
         w5500_send_tx_data(0, (const uint8_t*)header, header_len);
         w5500_send_tx_data(0, (const uint8_t*)json_buf, json_len);
-        sleep_ms(20);
         w5500_disconnect_socket(0);
-        sleep_ms(10);
-        w5500_close_socket(0);
-        w5500_listen_server(HTTP_PORT);
         return;
     }
 
@@ -1297,11 +1694,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
         w5500_send_tx_data(0, (const uint8_t*)header, header_len);
         w5500_send_tx_data(0, (const uint8_t*)json_buf, json_len);
-        sleep_ms(20);
         w5500_disconnect_socket(0);
-        sleep_ms(10);
-        w5500_close_socket(0);
-        w5500_listen_server(HTTP_PORT);
         return;
     }
 
@@ -1319,15 +1712,25 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
         w5500_send_tx_data(0, (const uint8_t*)header, header_len);
         w5500_send_tx_data(0, (const uint8_t*)json_buf, json_len);
-        sleep_ms(20);
         w5500_disconnect_socket(0);
-        sleep_ms(10);
-        w5500_close_socket(0);
-        w5500_listen_server(HTTP_PORT);
         return;
     }
 
     if (strstr((const char*)request_buf, "GET /api/rtd/flash") != NULL || strstr((const char*)request_buf, "POST /api/rtd/flash") != NULL) {
+        if (g_pico_ota_busy) {
+            char json_buf[256];
+            int json_len = snprintf(json_buf, sizeof(json_buf),
+                "{\"success\":false,\"message\":\"⚠️ Pico 2 이더넷 OTA가 진행 중입니다. 완료 후 다시 시도해주세요.\"}");
+            char header[256];
+            int header_len = snprintf(header, sizeof(header),
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                json_len);
+            w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+            w5500_send_tx_data(0, (const uint8_t*)json_buf, json_len);
+            w5500_disconnect_socket(0);
+            return;
+        }
+
         if (!g_fw_info.has_firmware || g_fw_info.size_bytes == 0) {
             char json_buf[256];
             int json_len = snprintf(json_buf, sizeof(json_buf),
@@ -1338,15 +1741,13 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
                 json_len);
             w5500_send_tx_data(0, (const uint8_t*)header, header_len);
             w5500_send_tx_data(0, (const uint8_t*)json_buf, json_len);
-            sleep_ms(20);
             w5500_disconnect_socket(0);
-            sleep_ms(10);
-            w5500_close_socket(0);
-            w5500_listen_server(HTTP_PORT);
             return;
         }
 
+        g_rtd_busy = true;
         bool flash_ok = rtd_isp_flash_from_storage(FLASH_RTD_BIN_OFFSET, g_fw_info.size_bytes);
+        g_rtd_busy = false;
         const rtd_flash_progress_t *prog = rtd_isp_get_progress();
 
         char json_buf[512];
@@ -1361,11 +1762,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
         w5500_send_tx_data(0, (const uint8_t*)header, header_len);
         w5500_send_tx_data(0, (const uint8_t*)json_buf, json_len);
-        sleep_ms(10);
         w5500_disconnect_socket(0);
-        sleep_ms(10);
-        w5500_close_socket(0);
-        w5500_listen_server(HTTP_PORT);
         return;
     }
 
@@ -1509,11 +1906,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
         w5500_send_tx_data(0, (const uint8_t*)header, header_len);
         w5500_send_tx_data(0, (const uint8_t*)resp_buf, strlen(resp_buf));
-        sleep_ms(10);
         w5500_disconnect_socket(0);
-        sleep_ms(10);
-        w5500_close_socket(0);
-        w5500_listen_server(HTTP_PORT);
         return;
     }
 
@@ -1526,12 +1919,29 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
     }
 
     if (strstr((const char*)request_buf, "POST /upload_pico_fw") != NULL || strstr((const char*)request_buf, "POST /upload_ota") != NULL) {
+        if (g_rtd_busy) {
+            printf("⚠️ [이더넷 OTA 거부] Realtek 펌웨어 작업 진행 중!\n");
+            char resp_msg[256];
+            snprintf(resp_msg, sizeof(resp_msg), "⚠️ Realtek 스케일러 작업(업로드/플래싱)이 진행 중입니다. 작업 완료 후 다시 시도해주세요.");
+            char header[256];
+            int header_len = snprintf(header, sizeof(header),
+                "HTTP/1.1 409 Conflict\r\nContent-Type: text/plain; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                (int)strlen(resp_msg));
+            w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+            w5500_send_tx_data(0, (const uint8_t*)resp_msg, strlen(resp_msg));
+            w5500_disconnect_socket(0);
+            return;
+        }
+
+        g_pico_ota_busy = true;
+
         // High-Speed Pico 2 Ethernet OTA Firmware Flashing Handler
         uint32_t content_length = parse_content_length((const char*)request_buf);
         char orig_filename[128];
         parse_upload_filename((const char*)request_buf, orig_filename, sizeof(orig_filename));
 
         if (content_length == 0 || content_length > FLASH_OTA_MAX_SIZE) {
+            g_pico_ota_busy = false;
             char resp_msg[256];
             snprintf(resp_msg, sizeof(resp_msg), "⚠️ OTA 업로드 용량 오류! (%lu Bytes, 최대 1MB 허용)", (unsigned long)content_length);
             char header[256];
@@ -1542,23 +1952,65 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
             return;
         }
 
-        printf("?? [?´ë??OTA ?ì  ?ì] %s (%lu Bytes) -> Staging Bank (0x10100000)\n", orig_filename, (unsigned long)content_length);
+        // 🛡️ 1. Filename opposite-chip pre-check
+        if (ci_strstr(orig_filename, OPPOSITE_CHIP_NAME) != NULL) {
+            g_pico_ota_busy = false;
+            printf("❌ [OTA 거부] 타겟 칩셋 불일치! (%s -> %s 전용 바이너리 의심)\n", orig_filename, OPPOSITE_CHIP_NAME);
+            char resp_msg[384];
+            snprintf(resp_msg, sizeof(resp_msg),
+                "❌ [이더넷 OTA 업로드 거부 - 칩셋 불일치]\n\n"
+                "현재 장비는 " ETH_CHIP_NAME " 보드입니다.\n"
+                "선택하신 파일(%s)은 " OPPOSITE_CHIP_NAME " 전용 펌웨어로 감지되었습니다.\n\n"
+                "이더넷 통신 불가(벽돌 현상)를 방지하기 위해 업로드가 사전 차단되었습니다.\n"
+                "👉 " ETH_CHIP_NAME " 전용 펌웨어를 선택해주세요.",
+                orig_filename);
+            char header[256];
+            int header_len = snprintf(header, sizeof(header),
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                (int)strlen(resp_msg));
+            w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+            w5500_send_tx_data(0, (const uint8_t*)resp_msg, strlen(resp_msg));
+            w5500_disconnect_socket(0);
+            return;
+        }
+
+        printf("⚡ [이더넷 OTA 수신 시작] %s (%lu Bytes) -> Staging Bank (0x10080000)\n", orig_filename, (unsigned long)content_length);
 
         // -------------------------------------------------------------------
-        // ? Pico 2 (RP2350) ARM Cortex-M33 Vector Table & UF2 Magic Header Guard
+        // 🛡️ Pico 2 (RP2350) OTA .BIN Only Guard
         // -------------------------------------------------------------------
         if (body_start && body_in_req_buf >= 8) {
             uint32_t magic_uf2  = (uint32_t)body_start[0] | ((uint32_t)body_start[1] << 8) | ((uint32_t)body_start[2] << 16) | ((uint32_t)body_start[3] << 24);
             uint32_t initial_sp = magic_uf2;
-            uint32_t reset_vec  = (uint32_t)body_start[4] | ((uint32_t)body_start[5] << 8) | ((uint32_t)body_start[6] << 16) | ((uint32_t)body_start[7] << 24);
-
-            bool is_uf2 = (magic_uf2 == 0x0A324655ULL);
+            bool is_uf2 = (magic_uf2 == 0x0A324655ULL) || ci_strstr(orig_filename, ".uf2") != NULL;
             bool is_rp2350_picobin = (initial_sp == 0x4D535052ULL || initial_sp == 0xFFFFEDACULL || (initial_sp >= 0x20000000ULL && initial_sp <= 0x200B0000ULL));
             bool is_realtek = (strstr(orig_filename, "dh9") != NULL || strstr(orig_filename, "DH9") != NULL || strstr(orig_filename, "rlt") != NULL || ((uint8_t)body_start[0] == 0x02 || (uint8_t)body_start[0] == 0x12));
 
-            if (!is_uf2 && !is_rp2350_picobin && is_realtek) {
-                printf("? ï¸ [?´ë??OTA ê±°ë?] ?¬ë°ë¥?Pico 2 ARM ?ì¨?´ê? ?ë?ë¤! (Realtek BIN ê°ì???\n");
-                                                char resp_msg[384];
+            if (is_uf2) {
+                g_pico_ota_busy = false;
+                printf("⚠️ [이더넷 OTA 거부] .UF2 파일 감지! (이더넷 OTA는 .BIN 전용)\n");
+                char resp_msg[384];
+                snprintf(resp_msg, sizeof(resp_msg),
+                    "⚠️ 이더넷 OTA 업로드 거부! (.uf2 파일 선택됨)\n\n"
+                    "선택하신 파일은 USB BOOTSEL 복사용 .uf2 파일입니다.\n"
+                    "이더넷 OTA 원격 업데이트는 100%% 안정성을 위해 순수 바이너리(.bin)만 지원합니다.\n\n"
+                    "👉 build 폴더의 " ETH_CHIP_NAME "_pico2_firmware.bin 파일을 선택해주세요!");
+
+                char header[256];
+                int header_len = snprintf(header, sizeof(header),
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                     (int)strlen(resp_msg));
+
+                w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+                w5500_send_tx_data(0, (const uint8_t*)resp_msg, strlen(resp_msg));
+                w5500_disconnect_socket(0);
+                return;
+            }
+
+            if (!is_rp2350_picobin && is_realtek) {
+                g_pico_ota_busy = false;
+                printf("⚠️ [이더넷 OTA 거부] 올바른 Pico 2 ARM 펌웨어가 아닙니다! (Realtek BIN 감지)\n");
+                char resp_msg[384];
                 snprintf(resp_msg, sizeof(resp_msg),
                     "⚠️ 이더넷 OTA 업로드 거부!\n\n"
                     "선택하신 파일은 Pico 2 (RP2350) ARM 실행 바이너리가 아닙니다.\n"
@@ -1586,8 +2038,15 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
         uint32_t total_sum = 0;
         uint32_t received = 0;
         uint32_t payload_written = 0;
-        uint32_t max_flash_offset = 0;
         bool upload_success = false;
+
+        // 🛡️ 2. Binary Stream Signature Scanner (UF2 & Pure BIN)
+        bool chip_mismatch = false;
+        uint8_t carry_buf[64];
+        uint32_t carry_len = 0;
+        memset(carry_buf, 0, sizeof(carry_buf));
+        char opp_tag[32];
+        get_opposite_chip_tag(opp_tag, sizeof(opp_tag));
 
         if (is_uf2) {
             // UF2 Stream Processing: Accumulate 512-byte blocks and program 256-byte payloads
@@ -1596,19 +2055,21 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
             if (body_start && body_in_req_buf > 0) {
                 uint32_t copy_len = (body_in_req_buf > content_length) ? content_length : body_in_req_buf;
-                process_uf2_chunk((const uint8_t*)body_start, copy_len, uf2_block, &uf2_idx, &total_sum, &payload_written);
+                process_uf2_chunk((const uint8_t*)body_start, copy_len, uf2_block, &uf2_idx, &total_sum, &payload_written, &chip_mismatch, carry_buf, &carry_len, opp_tag);
                 received = copy_len;
             }
 
             static uint8_t rx_chunk[2048];
             uint64_t start_t = time_us_64();
-            while (received < content_length) {
+            while (!chip_mismatch && received < content_length) {
                 uint16_t avail = w5500_rx_bytes_available(0);
                 if (avail > 0) {
                     uint16_t n = w5500_read_rx_data(0, rx_chunk, sizeof(rx_chunk));
                     if (n > 0) {
-                        process_uf2_chunk(rx_chunk, n, uf2_block, &uf2_idx, &total_sum, &payload_written);
-                        received += n;
+                        uint32_t to_process = (received + n > content_length) ? (content_length - received) : n;
+                        process_uf2_chunk(rx_chunk, to_process, uf2_block, &uf2_idx, &total_sum, &payload_written, &chip_mismatch, carry_buf, &carry_len, opp_tag);
+                        if (chip_mismatch) break;
+                        received += to_process;
                         start_t = time_us_64();
                     }
                 } else {
@@ -1623,13 +2084,13 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
                 }
             }
 
-            if (uf2_idx > 0 && uf2_idx < 512) {
+            if (!chip_mismatch && uf2_idx > 0 && uf2_idx < 512) {
                 uint8_t zero_pad[512] = {0};
                 uint32_t pad_len = 512 - uf2_idx;
-                process_uf2_chunk(zero_pad, pad_len, uf2_block, &uf2_idx, &total_sum, &payload_written);
+                process_uf2_chunk(zero_pad, pad_len, uf2_block, &uf2_idx, &total_sum, &payload_written, &chip_mismatch, carry_buf, &carry_len, opp_tag);
             }
 
-            if (received == content_length && payload_written > 0) {
+            if (!chip_mismatch && received == content_length && payload_written > 0) {
                 upload_success = true;
                 received = payload_written; // Actual extracted BIN size
             }
@@ -1642,28 +2103,38 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
             if (ubody && body_in_req_buf > 0) {
                 uint32_t copy_len = (body_in_req_buf > content_length) ? content_length : body_in_req_buf;
-                for (uint32_t i = 0; i < copy_len; i++) {
-                    total_sum += ubody[i];
-                    page_write_buf[page_buf_idx++] = ubody[i];
-                    if (page_buf_idx >= FLASH_PAGE_SIZE) {
-                        ensure_ota_sector_erased(flash_write_offset);
-                        safe_flash_program(flash_write_offset, page_write_buf, FLASH_PAGE_SIZE);
-                        flash_write_offset += FLASH_PAGE_SIZE;
-                        page_buf_idx = 0;
-                        sleep_us(100);
-                    }
+                if (check_tag_with_carry(ubody, copy_len, carry_buf, &carry_len, opp_tag)) {
+                    chip_mismatch = true;
                 }
-                received = copy_len;
+                if (!chip_mismatch) {
+                    for (uint32_t i = 0; i < copy_len; i++) {
+                        total_sum += ubody[i];
+                        page_write_buf[page_buf_idx++] = ubody[i];
+                        if (page_buf_idx >= FLASH_PAGE_SIZE) {
+                            ensure_ota_sector_erased(flash_write_offset);
+                            safe_flash_program(flash_write_offset, page_write_buf, FLASH_PAGE_SIZE);
+                            flash_write_offset += FLASH_PAGE_SIZE;
+                            page_buf_idx = 0;
+                            sleep_us(100);
+                        }
+                    }
+                    received = copy_len;
+                }
             }
 
             static uint8_t rx_chunk[2048];
             uint64_t start_t = time_us_64();
-            while (received < content_length) {
+            while (!chip_mismatch && received < content_length) {
                 uint16_t avail = w5500_rx_bytes_available(0);
                 if (avail > 0) {
                     uint16_t n = w5500_read_rx_data(0, rx_chunk, sizeof(rx_chunk));
                     if (n > 0) {
-                        for (uint16_t i = 0; i < n; i++) {
+                        uint32_t to_process = (received + n > content_length) ? (content_length - received) : n;
+                        if (check_tag_with_carry(rx_chunk, to_process, carry_buf, &carry_len, opp_tag)) {
+                            chip_mismatch = true;
+                            break;
+                        }
+                        for (uint16_t i = 0; i < to_process; i++) {
                             total_sum += rx_chunk[i];
                             page_write_buf[page_buf_idx++] = rx_chunk[i];
                             if (page_buf_idx >= FLASH_PAGE_SIZE) {
@@ -1674,7 +2145,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
                                 sleep_us(100);
                             }
                         }
-                        received += n;
+                        received += to_process;
                         start_t = time_us_64();
                     }
                 } else {
@@ -1689,21 +2160,47 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
                 }
             }
 
-            if (page_buf_idx > 0) {
+            if (!chip_mismatch && page_buf_idx > 0) {
                 memset(page_write_buf + page_buf_idx, 0xFF, FLASH_PAGE_SIZE - page_buf_idx);
                 ensure_ota_sector_erased(flash_write_offset);
                 safe_flash_program(flash_write_offset, page_write_buf, FLASH_PAGE_SIZE);
             }
 
-            if (received == content_length) {
+            if (!chip_mismatch && received == content_length) {
                 upload_success = true;
             }
         }
 
-        if (upload_success) {
-            printf("? [?´ë??OTA ?ì¡ ?±ê³µ] %s (%lu Bytes) ?ì´ë¡ë ?ë???ë£! ë¸ë¼?°ì? HTTP 200 OK ?ëµ ?ì¡...\n", orig_filename, (unsigned long)received);
+        if (chip_mismatch) {
+            g_pico_ota_busy = false;
+            printf("❌ [OTA 차단] 반대 칩셋 바이너리 서명(%s) 감지됨! 플래시 무효화 및 거부 응답 전송...\n", opp_tag);
+            // 🛡️ 첫 번째 스테이징 섹터를 즉시 소거하여 부분 쓰기된 바이너리를 무효화
+            safe_flash_erase(FLASH_OTA_STAGING_OFFSET, FLASH_SECTOR_SIZE);
 
-                                    char resp_msg[512];
+            char resp_msg[512];
+            snprintf(resp_msg, sizeof(resp_msg),
+                "❌ [이더넷 OTA 업로드 거부 - 바이너리 서명 불일치!]\n\n"
+                "수신된 펌웨어 내부에서 %s 전용 하드웨어 서명(%s)이 검출되었습니다!\n\n"
+                "현재 보드는 " ETH_CHIP_NAME " 전용 보드입니다.\n"
+                "파일명이 변경되었더라도 내부 칩셋 서명 사전 검사로 안전하게 차단되었으며, 플래시 쓰기는 즉시 취소되었습니다.\n\n"
+                "👉 올바른 " ETH_CHIP_NAME " 전용 펌웨어를 업로드해주세요.",
+                OPPOSITE_CHIP_NAME, opp_tag);
+
+            char header[256];
+            int header_len = snprintf(header, sizeof(header),
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                (int)strlen(resp_msg));
+
+            w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+            w5500_send_tx_data(0, (const uint8_t*)resp_msg, strlen(resp_msg));
+            w5500_disconnect_socket(0);
+            return;
+        }
+
+        if (upload_success) {
+            printf("🎉 [이더넷 OTA 전송 성공] %s (%lu Bytes) 페이로드 플래시 완료! 브라우저 HTTP 200 OK 응답 전송...\n", orig_filename, (unsigned long)received);
+
+            char resp_msg[512];
             snprintf(resp_msg, sizeof(resp_msg),
                 "🚀 Pico 2 이더넷 OTA 펌웨어 업로드 성공!\n"
                 "- 파일명: %s\n"
@@ -1735,25 +2232,15 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
             safe_flash_erase(FLASH_OTA_META_OFFSET, FLASH_SECTOR_SIZE);
             safe_flash_program(FLASH_OTA_META_OFFSET, meta_sector, FLASH_SECTOR_SIZE);
 
-            // Clean TCP disconnect and wait 1.2s to allow browser to receive 200 OK before reboot
+            // Clean TCP disconnect and wait 1000ms to allow browser to receive 200 OK
             w5500_disconnect_socket(0);
-            sleep_ms(1200);
+            sleep_ms(1000);
 
-            for (int i = 0; i < 8; i++) {
-                watchdog_hw->scratch[i] = 0;
-            }
-
-            systick_hw->csr = 0;
-            save_and_disable_interrupts();
-
-            // RP2350 ARM Cortex-M33 SCB AIRCR System Reset (100% ?ë?¨ì´ ì½ë ë¦¬ì)
-            scb_hw->aircr = (0x05FA << 16) | (1 << 2);
-            __asm__ volatile ("dsb" ::: "memory");
-            __asm__ volatile ("isb" ::: "memory");
-
-            while (1) { __asm__ volatile ("nop"); }
+            // One-step direct SRAM Flash overwrite and single hardware reboot
+            apply_ota_firmware_now();
             return;
         } else {
+            g_pico_ota_busy = false;
             char resp_msg[256];
             snprintf(resp_msg, sizeof(resp_msg), "⚠️ 이더넷 OTA 업로드 실패! (수신됨: %lu / %lu Bytes)", (unsigned long)received, (unsigned long)content_length);
             char header[256];
@@ -1766,16 +2253,52 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
     }
 
     if (strstr((const char*)request_buf, "POST /upload_start") != NULL) {
+        if (g_pico_ota_busy) {
+            printf("⚠️ [Realtek 업로드 거부] Pico 2 이더넷 OTA 진행 중!\n");
+            const char *resp = "{\"success\":false,\"error\":\"⚠️ Pico 2 이더넷 OTA가 진행 중입니다. 완료 후 다시 시도해주세요.\"}";
+            char header[256];
+            int header_len = snprintf(header, sizeof(header),
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                (int)strlen(resp));
+            w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+            w5500_send_tx_data(0, (const uint8_t*)resp, strlen(resp));
+            sleep_ms(20);
+            w5500_disconnect_socket(0);
+            sleep_ms(10);
+            w5500_close_socket(0);
+            w5500_listen_server(HTTP_PORT);
+            return;
+        }
+
         uint32_t total_size = parse_query_uint32((const char*)request_buf, "size");
         if (total_size == 0) total_size = parse_content_length((const char*)request_buf);
         parse_upload_filename((const char*)request_buf, s_chunk_filename, sizeof(s_chunk_filename));
 
+        // 🛡️ Block Pico 2 / ethernet chipset binaries from being uploaded to Realtek Scaler Flash
+        if (ci_strstr(s_chunk_filename, "pico2") != NULL ||
+            ci_strstr(s_chunk_filename, "w5500") != NULL ||
+            ci_strstr(s_chunk_filename, "w6300") != NULL ||
+            ci_strstr(s_chunk_filename, ".uf2") != NULL) {
+            printf("❌ [Realtek 거부] Pico 2 보드 전용 파일 감지! (%s)\n", s_chunk_filename);
+            const char *resp = "{\"success\":false,\"error\":\"Pico 2 메인보드 전용 펌웨어는 Realtek 스케일러 영역에 업로드할 수 없습니다.\"}";
+            char header[256];
+            int header_len = snprintf(header, sizeof(header),
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                (int)strlen(resp));
+            w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+            w5500_send_tx_data(0, (const uint8_t*)resp, strlen(resp));
+            sleep_ms(20);
+            w5500_disconnect_socket(0);
+            return;
+        }
+
         if (total_size > 0 && total_size <= FLASH_RTD_MAX_SIZE) {
+            g_rtd_busy = true;
             s_chunk_expected_size = total_size;
             s_chunk_received_bytes = 0;
             s_chunk_total_sum = 0;
 
-            printf("?? [Chunked Upload ?ì] ?ì¼: %s, ?©ë: %lu Bytes\n",
+            printf("⚡ [Chunked Upload 시작] 파일: %s, 용량: %lu Bytes\n",
                 s_chunk_filename, (unsigned long)total_size);
 
             const char *resp = "{\"success\":true}";
@@ -1786,13 +2309,10 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
             w5500_send_tx_data(0, (const uint8_t*)header, header_len);
             w5500_send_tx_data(0, (const uint8_t*)resp, strlen(resp));
-            sleep_ms(20);
             w5500_disconnect_socket(0);
-            sleep_ms(10);
-            w5500_close_socket(0);
-            w5500_listen_server(HTTP_PORT);
             return;
         } else {
+            g_rtd_busy = false;
             const char *resp = "{\"success\":false,\"error\":\"Invalid file size\"}";
             char header[256];
             int header_len = snprintf(header, sizeof(header),
@@ -1842,6 +2362,27 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
             }
 
             if (received == chunk_len) {
+                // 🛡️ Inspect first chunk (offset 0) to ensure it's not a Pico 2 ARM / UF2 binary
+                if (offset == 0 && chunk_len >= 8) {
+                    uint32_t magic = (uint32_t)chunk_buf[0] | ((uint32_t)chunk_buf[1] << 8) | ((uint32_t)chunk_buf[2] << 16) | ((uint32_t)chunk_buf[3] << 24);
+                    bool is_uf2 = (magic == 0x0A324655ULL);
+                    bool is_arm_sp = (magic == 0x4D535052ULL || magic == 0xFFFFEDACULL || (magic >= 0x20000000ULL && magic <= 0x200B0000ULL));
+                    if (is_uf2 || is_arm_sp) {
+                        g_rtd_busy = false;
+                        printf("❌ [Realtek 거부] 첫 청크에서 Pico 2 ARM 바이너리 감지! (Magic: 0x%08X)\n", (unsigned int)magic);
+                        const char *resp = "{\"success\":false,\"error\":\"Pico 2 ARM 실행 바이너리는 Realtek 스케일러 영역에 업로드할 수 없습니다.\"}";
+                        char header[256];
+                        int header_len = snprintf(header, sizeof(header),
+                            "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                            (int)strlen(resp));
+                        w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+                        w5500_send_tx_data(0, (const uint8_t*)resp, strlen(resp));
+                        sleep_ms(20);
+                        w5500_disconnect_socket(0);
+                        return;
+                    }
+                }
+
                 // Erase this 32KB chunk area before programming
                 uint32_t erase_len = (chunk_len + FLASH_SECTOR_SIZE - 1) & ~(FLASH_SECTOR_SIZE - 1);
                 safe_flash_erase(FLASH_RTD_BIN_OFFSET + offset, erase_len);
@@ -1872,15 +2413,12 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
                 w5500_send_tx_data(0, (const uint8_t*)header, header_len);
                 w5500_send_tx_data(0, (const uint8_t*)resp, strlen(resp));
-                sleep_ms(15);
                 w5500_disconnect_socket(0);
-                sleep_ms(10);
-                w5500_close_socket(0);
-                w5500_listen_server(HTTP_PORT);
                 return;
             }
         }
 
+        g_rtd_busy = false;
         const char *resp = "{\"success\":false,\"error\":\"Chunk write failed\"}";
         char header[256];
         int header_len = snprintf(header, sizeof(header),
@@ -1894,6 +2432,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
     }
 
     if (strstr((const char*)request_buf, "POST /upload_finish") != NULL) {
+        g_rtd_busy = false;
         parse_upload_filename((const char*)request_buf, s_chunk_filename, sizeof(s_chunk_filename));
         g_fw_info.has_firmware = true;
         strncpy(g_fw_info.filename, s_chunk_filename, sizeof(g_fw_info.filename) - 1);
@@ -1919,19 +2458,85 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
         w5500_send_tx_data(0, (const uint8_t*)header, header_len);
         w5500_send_tx_data(0, (const uint8_t*)resp_msg, strlen(resp_msg));
-        sleep_ms(50);
         w5500_disconnect_socket(0);
-        sleep_ms(10);
-        w5500_close_socket(0);
-        w5500_listen_server(HTTP_PORT);
         return;
     }
 
     if (strstr((const char*)request_buf, "POST /upload") != NULL) {
+        if (g_pico_ota_busy) {
+            printf("⚠️ [Realtek 업로드 거부] Pico 2 이더넷 OTA 진행 중!\n");
+            const char *resp = "{\"success\":false,\"error\":\"⚠️ Pico 2 이더넷 OTA가 진행 중입니다. 완료 후 다시 시도해주세요.\"}";
+            char header[256];
+            int header_len = snprintf(header, sizeof(header),
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                (int)strlen(resp));
+            w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+            w5500_send_tx_data(0, (const uint8_t*)resp, strlen(resp));
+            sleep_ms(20);
+            w5500_disconnect_socket(0);
+            return;
+        }
+
+        if (g_rtd_busy) {
+            printf("⚠️ [Realtek 업로드 거부] 이미 다른 업로드 작업 진행 중!\n");
+            const char *resp = "{\"success\":false,\"error\":\"⚠️ Realtek 펌웨어 업로드 작업이 이미 진행 중입니다.\"}";
+            char header[256];
+            int header_len = snprintf(header, sizeof(header),
+                "HTTP/1.1 409 Conflict\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                (int)strlen(resp));
+            w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+            w5500_send_tx_data(0, (const uint8_t*)resp, strlen(resp));
+            sleep_ms(20);
+            w5500_disconnect_socket(0);
+            return;
+        }
+
+        g_rtd_busy = true;
+
         // High-Speed POST firmware upload handler
         uint32_t content_length = parse_content_length((const char*)request_buf);
         char orig_filename[128];
         parse_upload_filename((const char*)request_buf, orig_filename, sizeof(orig_filename));
+
+        // 🛡️ Block Pico 2 / ethernet chipset binaries
+        if (ci_strstr(orig_filename, "pico2") != NULL ||
+            ci_strstr(orig_filename, "w5500") != NULL ||
+            ci_strstr(orig_filename, "w6300") != NULL ||
+            ci_strstr(orig_filename, ".uf2") != NULL) {
+            g_rtd_busy = false;
+            printf("❌ [Realtek 거부] Pico 2 보드 전용 파일 감지! (%s)\n", orig_filename);
+            const char *resp = "{\"success\":false,\"error\":\"Pico 2 메인보드 전용 펌웨어는 Realtek 스케일러 영역에 업로드할 수 없습니다.\"}";
+            char header[256];
+            int header_len = snprintf(header, sizeof(header),
+                "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                (int)strlen(resp));
+            w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+            w5500_send_tx_data(0, (const uint8_t*)resp, strlen(resp));
+            sleep_ms(20);
+            w5500_disconnect_socket(0);
+            return;
+        }
+
+        // 🛡️ Inspect first bytes in body_start for UF2 or ARM stack pointer
+        if (body_start && body_in_req_buf >= 8) {
+            uint32_t magic = (uint32_t)body_start[0] | ((uint32_t)body_start[1] << 8) | ((uint32_t)body_start[2] << 16) | ((uint32_t)body_start[3] << 24);
+            bool is_uf2 = (magic == 0x0A324655ULL);
+            bool is_arm_sp = (magic == 0x4D535052ULL || magic == 0xFFFFEDACULL || (magic >= 0x20000000ULL && magic <= 0x200B0000ULL));
+            if (is_uf2 || is_arm_sp) {
+                g_rtd_busy = false;
+                printf("❌ [Realtek 거부] Pico 2 ARM 바이너리 감지! (Magic: 0x%08X)\n", (unsigned int)magic);
+                const char *resp = "{\"success\":false,\"error\":\"Pico 2 ARM 실행 바이너리는 Realtek 스케일러 영역에 업로드할 수 없습니다.\"}";
+                char header[256];
+                int header_len = snprintf(header, sizeof(header),
+                    "HTTP/1.1 400 Bad Request\r\nContent-Type: application/json; charset=utf-8\r\nAccess-Control-Allow-Origin: *\r\nCache-Control: no-cache\r\nContent-Length: %d\r\nConnection: close\r\n\r\n",
+                    (int)strlen(resp));
+                w5500_send_tx_data(0, (const uint8_t*)header, header_len);
+                w5500_send_tx_data(0, (const uint8_t*)resp, strlen(resp));
+                sleep_ms(20);
+                w5500_disconnect_socket(0);
+                return;
+            }
+        }
 
         uint32_t total_sum = 0;
         uint32_t received = 0;
@@ -1945,12 +2550,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
             uint32_t flash_write_offset = FLASH_RTD_BIN_OFFSET;
             uint32_t last_log_kb = 0;
 
-            uint32_t erase_size = (content_length + FLASH_SECTOR_SIZE - 1) & ~(FLASH_SECTOR_SIZE - 1);
-            printf("?? [Realtek FW ?¬ì  ?ê±°] Flash 0x%08X ~ 0x%08X (%lu Bytes)...\n",
-                (unsigned int)FLASH_RTD_BIN_OFFSET, (unsigned int)(FLASH_RTD_BIN_OFFSET + erase_size), (unsigned long)erase_size);
-            safe_flash_erase(FLASH_RTD_BIN_OFFSET, erase_size);
-
-            printf("?? [Realtek FW ?ì  ?ì] %s (%lu Bytes / %.1f KB)\n",
+            printf("⚡ [Realtek FW 초고속 스트리밍 시작] %s (%lu Bytes / %.1f KB)\n",
                 orig_filename, (unsigned long)content_length, (float)content_length / 1024.0f);
 
             // Process initial binary payload bytes already in request_buf
@@ -1962,6 +2562,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
                     page_write_buf[page_buf_idx++] = b;
                     if (page_buf_idx >= FLASH_PAGE_SIZE) {
                         if (flash_write_offset + FLASH_PAGE_SIZE <= FLASH_RTD_BIN_OFFSET + FLASH_RTD_MAX_SIZE) {
+                            ensure_rtd_sector_erased(flash_write_offset);
                             safe_flash_program(flash_write_offset, page_write_buf, FLASH_PAGE_SIZE);
                             flash_write_offset += FLASH_PAGE_SIZE;
                         }
@@ -1971,12 +2572,13 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
                 received = copy_len;
             }
 
-            static uint8_t rx_chunk[2048];
+            static uint8_t rx_chunk[4096];
             uint64_t start_t = time_us_64();
             while (received < content_length) {
                 uint16_t avail = w5500_rx_bytes_available(0);
                 if (avail > 0) {
-                    uint16_t n = w5500_read_rx_data(0, rx_chunk, sizeof(rx_chunk));
+                    uint16_t to_read = (avail > sizeof(rx_chunk)) ? sizeof(rx_chunk) : avail;
+                    uint16_t n = w5500_read_rx_data(0, rx_chunk, to_read);
                     if (n > 0) {
                         for (uint16_t i = 0; i < n; i++) {
                             uint8_t b = rx_chunk[i];
@@ -1984,10 +2586,12 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
                             page_write_buf[page_buf_idx++] = b;
                             if (page_buf_idx >= FLASH_PAGE_SIZE) {
                                 if (flash_write_offset + FLASH_PAGE_SIZE <= FLASH_RTD_BIN_OFFSET + FLASH_RTD_MAX_SIZE) {
+                                    ensure_rtd_sector_erased(flash_write_offset);
                                     safe_flash_program(flash_write_offset, page_write_buf, FLASH_PAGE_SIZE);
                                     flash_write_offset += FLASH_PAGE_SIZE;
+                                    page_buf_idx = 0;
+                                    sleep_us(100);
                                 }
-                                page_buf_idx = 0;
                             }
                         }
                         received += n;
@@ -2000,26 +2604,19 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
                         uint32_t curr_kb = received / 1024;
                         if (curr_kb >= last_log_kb + 128 || received >= content_length) {
                             last_log_kb = curr_kb;
-                            printf("   ??Realtek FW ???ì§í: %lu / %lu Bytes (%lu%%)\n",
+                            printf("   ⚡ Realtek FW 전송 진행: %lu / %lu Bytes (%lu%%)\n",
                                 (unsigned long)received, (unsigned long)content_length,
                                 (unsigned long)((uint64_t)received * 100 / content_length));
                         }
                     }
                 } else {
                     uint8_t status = w5500_get_socket_status(0);
-                    if (status == SOCK_CLOSED) {
-                        if (w5500_rx_bytes_available(0) == 0) {
-                            if (time_us_64() - start_t > 1000000ULL) break; // Wait at least 1s before break
-                        }
-                    } else if (status == SOCK_CLOSE_WAIT) {
-                        if (w5500_rx_bytes_available(0) == 0) {
-                            if (time_us_64() - start_t > 1000000ULL) break; // Wait at least 1s before break
-                        }
+                    if (status == SOCK_CLOSED) break;
+                    if (status == SOCK_CLOSE_WAIT) {
+                        sleep_ms(10);
+                        if (w5500_rx_bytes_available(0) == 0) break;
                     }
-                    if (time_us_64() - start_t > 30000000ULL) { // 30 sec timeout
-                        printf("? ï¸ [Timeout] Realtek FW ?ë¡???ê° ì´ê³¼: %lu / %lu Bytes\n", (unsigned long)received, (unsigned long)content_length);
-                        break;
-                    }
+                    if (time_us_64() - start_t > 30000000ULL) break;
                     sleep_us(50);
                 }
             }
@@ -2027,6 +2624,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
             if (page_buf_idx > 0) {
                 memset(page_write_buf + page_buf_idx, 0xFF, FLASH_PAGE_SIZE - page_buf_idx);
                 if (flash_write_offset + FLASH_PAGE_SIZE <= FLASH_RTD_BIN_OFFSET + FLASH_RTD_MAX_SIZE) {
+                    ensure_rtd_sector_erased(flash_write_offset);
                     safe_flash_program(flash_write_offset, page_write_buf, FLASH_PAGE_SIZE);
                 }
             }
@@ -2044,6 +2642,8 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
                 upload_success = true;
             }
         }
+
+        g_rtd_busy = false;
 
         if (upload_success) {
             g_fw_info.has_firmware = true;
@@ -2070,11 +2670,7 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
             w5500_send_tx_data(0, (const uint8_t*)header, header_len);
             w5500_send_tx_data(0, (const uint8_t*)resp_msg, strlen(resp_msg));
-            sleep_ms(150);
             w5500_disconnect_socket(0);
-            sleep_ms(30);
-            w5500_close_socket(0);
-            w5500_listen_server(HTTP_PORT);
         } else {
             char resp_msg[256];
             snprintf(resp_msg, sizeof(resp_msg),
@@ -2088,14 +2684,10 @@ void http_server_process_request(uint8_t *request_buf, uint16_t req_len, float c
 
             w5500_send_tx_data(0, (const uint8_t*)header, header_len);
             w5500_send_tx_data(0, (const uint8_t*)resp_msg, strlen(resp_msg));
-            sleep_ms(100);
             w5500_disconnect_socket(0);
-            sleep_ms(10);
-            w5500_close_socket(0);
-            w5500_listen_server(HTTP_PORT);
         }
     } else {
-        static char page_buf[49152];
+        static char page_buf[61440];
         memset(page_buf, 0, sizeof(page_buf));
         uint32_t uptime_sec = (uint32_t)(time_us_64() / 1000000ULL);
         build_html_page(page_buf, sizeof(page_buf), cpu_temp, *led_state, uptime_sec);

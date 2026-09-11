@@ -21,11 +21,21 @@ if %ERRORLEVEL% NEQ 0 (
     exit /b %ERRORLEVEL%
 )
 
+findstr /C:"TARGET_ETH_CHIP CHIP_W6300" config.h >nul
+if %errorlevel% equ 0 (
+    set TARGET_UF2=build\w6300_pico2_firmware.uf2
+    set ETH_NAME=W6300
+) else (
+    set TARGET_UF2=build\w5500_pico2_firmware.uf2
+    set ETH_NAME=W5500
+)
+
 echo.
 echo ============================================================
-echo [2/2] Auto-flashing (%FW_VER%) via Picotool / Drive Copy...
+echo [2/2] Auto-flashing %ETH_NAME% (%FW_VER%) via Picotool / Drive Copy...
+echo Target File: %TARGET_UF2%
 echo ============================================================
-picotool load -fx build\w5500_pico2_firmware.uf2 2>nul
+picotool load -fx %TARGET_UF2% 2>nul
 
 if %ERRORLEVEL% EQU 0 (
     echo.
@@ -39,8 +49,8 @@ for /f "usebackq tokens=*" %%d in (`powershell -NoProfile -Command "Get-Volume |
 
 if defined PICO_DRIVE (
     echo Found BOOTSEL Drive at %PICO_DRIVE%\
-    echo Copying build\w5500_pico2_firmware.uf2 to %PICO_DRIVE%\ ...
-    copy /Y build\w5500_pico2_firmware.uf2 %PICO_DRIVE%\
+    echo Copying %TARGET_UF2% to %PICO_DRIVE%\ ...
+    copy /Y %TARGET_UF2% %PICO_DRIVE%\
     if %ERRORLEVEL% EQU 0 (
         echo.
         echo [SUCCESS] Firmware copied successfully! Pico 2 is rebooting.
@@ -52,5 +62,5 @@ if defined PICO_DRIVE (
     echo.
     echo [WARNING] Could not detect RPI-RP2 / RP2350 USB Drive.
     echo Please hold BOOTSEL button while reconnecting USB, then run upload.bat again,
-    echo or manually copy build\w5500_pico2_firmware.uf2 to the RPI-RP2 drive.
+    echo or manually copy %TARGET_UF2% to the RPI-RP2 drive.
 )

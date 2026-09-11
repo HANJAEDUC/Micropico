@@ -1,6 +1,7 @@
 # Build outputs
 c_firmware/build/
 build/
+*.bin
 *.obj
 *.o
 *.elf
