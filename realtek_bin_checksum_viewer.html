@@ -3,11 +3,11 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Realtek Firmware & BIN Checksum Analyzer</title>
+    <title>Realtek Firmware & BIN Checksum Dual Analyzer & Comparator</title>
     <!-- Google Fonts -->
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@400;600;700&display=swap" rel="stylesheet">
     
     <style>
         :root {
@@ -29,6 +29,7 @@
             --accent-purple: #c084fc;
             --accent-pink: #f472b6;
             --accent-red: #f87171;
+            --accent-orange: #fb923c;
             
             --font-sans: 'Inter', system-ui, -apple-system, sans-serif;
             --font-mono: 'JetBrains Mono', monospace;
@@ -57,7 +58,7 @@
         }
 
         .app-container {
-            max-width: 1000px;
+            max-width: 1100px;
             margin: 0 auto;
             width: 100%;
             display: flex;
@@ -82,7 +83,7 @@
         .header-brand {
             display: flex;
             align-items: center;
-            gap: 12px;
+            gap: 14px;
         }
 
         .logo-icon {
@@ -108,11 +109,18 @@
             color: var(--text-muted);
         }
 
+        .header-badges {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
         .badge-tag {
             background: rgba(91, 192, 190, 0.15);
             color: var(--accent-cyan);
             border: 1px solid rgba(91, 192, 190, 0.3);
-            padding: 4px 10px;
+            padding: 5px 12px;
             border-radius: 20px;
             font-size: 12px;
             font-weight: 600;
@@ -121,99 +129,203 @@
             gap: 6px;
         }
 
+        .badge-tag.compare-badge {
+            background: rgba(192, 132, 252, 0.15);
+            color: var(--accent-purple);
+            border-color: rgba(192, 132, 252, 0.3);
+        }
+
         .badge-tag::before {
             content: '';
             width: 7px;
             height: 7px;
-            background: var(--accent-cyan);
+            background: currentColor;
             border-radius: 50%;
-            box-shadow: 0 0 8px var(--accent-cyan);
+            box-shadow: 0 0 8px currentColor;
         }
 
-        /* Drop Zone */
-        .drop-zone {
+        /* Dual Slot Drop Zone Grid */
+        .drop-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 16px;
+        }
+
+        @media (max-width: 768px) {
+            .drop-grid {
+                grid-template-columns: 1fr;
+            }
+        }
+
+        .drop-slot-card {
             background: var(--bg-card);
             border: 2px dashed var(--border-color);
             border-radius: 14px;
-            padding: 36px 20px;
+            padding: 24px 20px;
             text-align: center;
             cursor: pointer;
             transition: all 0.25s ease;
             position: relative;
-            overflow: hidden;
-            box-shadow: 0 8px 20px rgba(0, 0, 0, 0.3);
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.25);
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            min-height: 190px;
         }
 
-        .drop-zone:hover, .drop-zone.dragover {
+        .drop-slot-card:hover, .drop-slot-card.dragover {
             border-color: var(--accent-cyan);
             background: var(--bg-card-hover);
-            box-shadow: 0 0 30px rgba(91, 192, 190, 0.35);
+            box-shadow: 0 0 25px rgba(91, 192, 190, 0.3);
             transform: translateY(-2px);
         }
 
-        .drop-zone.dragover .drop-icon {
-            transform: scale(1.2);
-            background: rgba(91, 192, 190, 0.25);
-            color: var(--accent-cyan);
-            box-shadow: 0 0 20px rgba(91, 192, 190, 0.4);
+        .drop-slot-card.slot-b:hover, .drop-slot-card.slot-b.dragover {
+            border-color: var(--accent-purple);
+            box-shadow: 0 0 25px rgba(192, 132, 252, 0.3);
         }
 
-        .drop-zone.dragover .drop-text {
-            color: var(--accent-cyan);
+        .drop-slot-card.loaded {
+            border-style: solid;
+            border-color: rgba(74, 222, 128, 0.5);
+            background: linear-gradient(180deg, #1c2541 0%, #17253b 100%);
         }
 
-        .drop-zone input[type="file"] {
+        .drop-slot-card.slot-b.loaded {
+            border-color: rgba(192, 132, 252, 0.6);
+        }
+
+        .slot-badge-label {
             position: absolute;
-            top: 0;
-            left: 0;
-            width: 100%;
-            height: 100%;
-            opacity: 0;
-            cursor: pointer;
-            z-index: 10;
+            top: 12px;
+            left: 14px;
+            font-size: 11px;
+            font-weight: 700;
+            padding: 3px 8px;
+            border-radius: 6px;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
         }
 
-        .drop-icon {
-            width: 56px;
-            height: 56px;
-            margin: 0 auto 12px;
-            background: rgba(56, 189, 248, 0.1);
+        .badge-slot-a {
+            background: rgba(56, 189, 248, 0.2);
+            color: var(--accent-blue);
+            border: 1px solid rgba(56, 189, 248, 0.3);
+        }
+
+        .badge-slot-b {
+            background: rgba(192, 132, 252, 0.2);
+            color: var(--accent-purple);
+            border: 1px solid rgba(192, 132, 252, 0.3);
+        }
+
+        .slot-actions-top {
+            position: absolute;
+            top: 10px;
+            right: 12px;
+            display: flex;
+            gap: 6px;
+            z-index: 20;
+        }
+
+        .btn-clear-slot {
+            background: rgba(248, 113, 113, 0.15);
+            border: 1px solid rgba(248, 113, 113, 0.3);
+            color: var(--accent-red);
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 6px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: none;
+        }
+
+        .btn-clear-slot:hover {
+            background: var(--accent-red);
+            color: white;
+        }
+
+        .drop-slot-card.loaded .btn-clear-slot {
+            display: inline-block;
+        }
+
+        .slot-icon {
+            width: 44px;
+            height: 44px;
+            margin-bottom: 10px;
             border-radius: 50%;
             display: flex;
             align-items: center;
             justify-content: center;
-            color: var(--accent-blue);
             transition: all 0.3s ease;
         }
 
-        .drop-text {
-            font-size: 16px;
-            font-weight: 600;
-            margin-bottom: 6px;
-            transition: color 0.2s ease;
+        .slot-a .slot-icon {
+            background: rgba(56, 189, 248, 0.12);
+            color: var(--accent-blue);
         }
 
-        .drop-subtext {
-            color: var(--text-muted);
+        .slot-b .slot-icon {
+            background: rgba(192, 132, 252, 0.12);
+            color: var(--accent-purple);
+        }
+
+        .drop-slot-card.loaded .slot-icon {
+            background: rgba(74, 222, 128, 0.15);
+            color: var(--accent-green);
+        }
+
+        .slot-title {
+            font-size: 15px;
+            font-weight: 700;
+            margin-bottom: 4px;
+            word-break: break-all;
+            padding: 0 10px;
+        }
+
+        .slot-desc {
             font-size: 12px;
-            margin-bottom: 16px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
         }
 
-        .btn-group {
-            display: flex;
-            gap: 10px;
-            justify-content: center;
-            align-items: center;
+        .slot-file-info {
+            display: none;
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            padding: 8px 14px;
+            margin-bottom: 10px;
+            font-family: var(--font-mono);
+            font-size: 12px;
+            text-align: left;
+            width: 100%;
+            max-width: 380px;
+        }
+
+        .drop-slot-card.loaded .slot-file-info {
+            display: block;
+        }
+
+        .drop-slot-card.loaded .slot-empty-prompt {
+            display: none;
+        }
+
+        .slot-btn-wrap {
             position: relative;
-            z-index: 12;
+            z-index: 15;
+            display: flex;
+            gap: 8px;
             flex-wrap: wrap;
+            justify-content: center;
         }
 
         .btn {
             background: linear-gradient(135deg, #0284c7, #0369a1);
             color: white;
             border: none;
-            padding: 9px 18px;
+            padding: 8px 16px;
             border-radius: 8px;
             font-weight: 600;
             font-size: 13px;
@@ -225,9 +337,17 @@
         }
 
         .btn:hover {
-            opacity: 0.9;
+            opacity: 0.92;
             transform: translateY(-1px);
             box-shadow: 0 4px 12px rgba(2, 132, 199, 0.4);
+        }
+
+        .btn-purple {
+            background: linear-gradient(135deg, #8b5cf6, #7c3aed);
+        }
+
+        .btn-purple:hover {
+            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.4);
         }
 
         .btn-secondary {
@@ -239,6 +359,51 @@
         .btn-secondary:hover {
             background: rgba(255, 255, 255, 0.15);
             box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+        }
+
+        .btn-sm {
+            padding: 5px 10px;
+            font-size: 11px;
+            border-radius: 6px;
+        }
+
+        /* Master Quick Action Bar */
+        .master-bar {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 12px;
+            padding: 12px 18px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+
+        .master-bar-text {
+            font-size: 12px;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .master-bar-buttons {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+        }
+
+        /* Hidden file inputs */
+        .hidden-input {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            opacity: 0;
+            cursor: pointer;
+            z-index: 10;
         }
 
         /* Progress Bar */
@@ -273,11 +438,292 @@
             transition: width 0.1s linear;
         }
 
-        /* Result Section */
-        .results-container {
+        /* Comparison Status Banner */
+        .compare-banner {
+            display: none;
+            border-radius: 14px;
+            padding: 24px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.4);
+            position: relative;
+            overflow: hidden;
+            border: 1px solid transparent;
+            animation: slideDown 0.3s ease;
+        }
+
+        @keyframes slideDown {
+            from { opacity: 0; transform: translateY(-10px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        .compare-banner.identical {
+            background: linear-gradient(135deg, rgba(74, 222, 128, 0.15) 0%, rgba(16, 185, 129, 0.08) 100%), var(--bg-card);
+            border-color: rgba(74, 222, 128, 0.5);
+        }
+
+        .compare-banner.identical::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 4px;
+            background: linear-gradient(90deg, var(--accent-green), var(--accent-cyan));
+        }
+
+        .compare-banner.different {
+            background: linear-gradient(135deg, rgba(248, 113, 113, 0.15) 0%, rgba(239, 68, 68, 0.08) 100%), var(--bg-card);
+            border-color: rgba(248, 113, 113, 0.5);
+        }
+
+        .compare-banner.different::before {
+            content: '';
+            position: absolute;
+            top: 0; left: 0; right: 0; height: 4px;
+            background: linear-gradient(90deg, var(--accent-red), var(--accent-orange));
+        }
+
+        .banner-header {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 16px;
+            margin-bottom: 16px;
+            flex-wrap: wrap;
+        }
+
+        .banner-main-title {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+        }
+
+        .banner-icon {
+            font-size: 32px;
+            line-height: 1;
+        }
+
+        .banner-text h2 {
+            font-size: 20px;
+            font-weight: 800;
+            letter-spacing: -0.3px;
+        }
+
+        .identical .banner-text h2 {
+            color: var(--accent-green);
+        }
+
+        .different .banner-text h2 {
+            color: var(--accent-red);
+        }
+
+        .banner-text p {
+            font-size: 13px;
+            color: var(--text-sub);
+            margin-top: 2px;
+        }
+
+        .banner-tag {
+            font-family: var(--font-mono);
+            font-size: 12px;
+            font-weight: 700;
+            padding: 5px 12px;
+            border-radius: 20px;
+            text-transform: uppercase;
+        }
+
+        .identical .banner-tag {
+            background: rgba(74, 222, 128, 0.2);
+            color: var(--accent-green);
+            border: 1px solid rgba(74, 222, 128, 0.4);
+        }
+
+        .different .banner-tag {
+            background: rgba(248, 113, 113, 0.2);
+            color: var(--accent-red);
+            border: 1px solid rgba(248, 113, 113, 0.4);
+        }
+
+        .banner-stats-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+            gap: 12px;
+        }
+
+        .stat-card {
+            background: var(--bg-input);
+            border: 1px solid var(--border-color);
+            border-radius: 10px;
+            padding: 12px 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 4px;
+        }
+
+        .stat-label {
+            font-size: 11px;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            font-weight: 600;
+        }
+
+        .stat-val {
+            font-size: 15px;
+            font-weight: 700;
+            font-family: var(--font-mono);
+            color: var(--text-main);
+        }
+
+        /* View Mode Navigation Tabs */
+        .tabs-container {
+            display: flex;
+            gap: 8px;
+            border-bottom: 1px solid var(--border-color);
+            padding-bottom: 4px;
+        }
+
+        .tab-btn {
+            background: transparent;
+            border: 1px solid transparent;
+            color: var(--text-muted);
+            font-size: 13px;
+            font-weight: 600;
+            padding: 8px 16px;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .tab-btn:hover {
+            color: var(--text-main);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        .tab-btn.active {
+            color: var(--accent-cyan);
+            background: rgba(91, 192, 190, 0.12);
+            border-color: rgba(91, 192, 190, 0.3);
+        }
+
+        /* Results / Compare Views */
+        .tab-content {
             display: none;
             flex-direction: column;
             gap: 16px;
+        }
+
+        .tab-content.active {
+            display: flex;
+        }
+
+        /* Side-by-Side Comparison Table */
+        .table-card {
+            background: var(--bg-card);
+            border: 1px solid var(--border-color);
+            border-radius: 14px;
+            padding: 20px;
+            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+        }
+
+        .card-title {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 8px;
+        }
+
+        .card-title-text {
+            font-size: 15px;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .card-tag {
+            font-size: 11px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-weight: 700;
+            text-transform: uppercase;
+        }
+
+        .table-responsive {
+            overflow-x: auto;
+            border: 1px solid var(--border-color);
+            border-radius: 8px;
+            background: var(--bg-input);
+        }
+
+        .compare-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .compare-table th {
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--accent-cyan);
+            font-weight: 700;
+            padding: 10px 14px;
+            border-bottom: 1px solid var(--border-color);
+            font-size: 12px;
+            text-transform: uppercase;
+            text-align: left;
+        }
+
+        .compare-table td {
+            padding: 10px 14px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+            color: var(--text-sub);
+            font-family: var(--font-mono);
+            font-size: 12.5px;
+        }
+
+        .compare-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .compare-table tr:hover td {
+            background: rgba(255, 255, 255, 0.03);
+        }
+
+        .diff-tag {
+            display: inline-flex;
+            align-items: center;
+            gap: 4px;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.3px;
+        }
+
+        .diff-tag.match {
+            background: rgba(74, 222, 128, 0.15);
+            color: var(--accent-green);
+            border: 1px solid rgba(74, 222, 128, 0.3);
+        }
+
+        .diff-tag.diff {
+            background: rgba(248, 113, 113, 0.18);
+            color: var(--accent-red);
+            border: 1px solid rgba(248, 113, 113, 0.4);
+        }
+
+        .row-diff td {
+            background: rgba(248, 113, 113, 0.04);
+        }
+
+        .cell-diff {
+            color: var(--accent-red) !important;
+            font-weight: 700;
+        }
+
+        .cell-match {
+            color: var(--accent-green) !important;
         }
 
         /* Dual Checksum Grid */
@@ -308,10 +754,7 @@
         .checksum-card.featured-realtek-1::before {
             content: '';
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 4px;
+            top: 0; left: 0; right: 0; height: 4px;
             background: linear-gradient(90deg, var(--accent-yellow), #f59e0b);
         }
 
@@ -323,34 +766,8 @@
         .checksum-card.featured-realtek-2::before {
             content: '';
             position: absolute;
-            top: 0;
-            left: 0;
-            right: 0;
-            height: 4px;
+            top: 0; left: 0; right: 0; height: 4px;
             background: linear-gradient(90deg, var(--accent-purple), var(--accent-pink));
-        }
-
-        .card-title {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 8px;
-        }
-
-        .card-title-text {
-            font-size: 15px;
-            font-weight: 700;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-
-        .card-tag {
-            font-size: 11px;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-weight: 700;
-            text-transform: uppercase;
         }
 
         .tag-realtek1 {
@@ -363,11 +780,6 @@
             background: rgba(192, 132, 252, 0.2);
             color: var(--accent-purple);
             border: 1px solid rgba(192, 132, 252, 0.3);
-        }
-
-        .tag-standard {
-            background: rgba(148, 163, 184, 0.15);
-            color: var(--text-muted);
         }
 
         .checksum-val-box {
@@ -391,8 +803,6 @@
 
         .val-yellow { color: var(--accent-yellow); }
         .val-purple { color: var(--accent-purple); }
-        .val-cyan { color: var(--accent-cyan); }
-        .val-green { color: var(--accent-green); }
 
         .btn-copy {
             background: rgba(255, 255, 255, 0.06);
@@ -483,56 +893,6 @@
         }
 
         /* Bank Breakdown Table */
-        .bank-card {
-            background: var(--bg-card);
-            border: 1px solid var(--border-color);
-            border-radius: 14px;
-            padding: 20px;
-            box-shadow: 0 6px 16px rgba(0, 0, 0, 0.3);
-            display: flex;
-            flex-direction: column;
-            gap: 14px;
-        }
-
-        .bank-table-wrapper {
-            overflow-x: auto;
-            border: 1px solid var(--border-color);
-            border-radius: 8px;
-            background: var(--bg-input);
-        }
-
-        .bank-table {
-            width: 100%;
-            border-collapse: collapse;
-            font-size: 13px;
-            text-align: center;
-        }
-
-        .bank-table th {
-            background: rgba(255, 255, 255, 0.06);
-            color: var(--accent-cyan);
-            font-weight: 700;
-            padding: 10px 14px;
-            border-bottom: 1px solid var(--border-color);
-            font-size: 12px;
-            text-transform: uppercase;
-        }
-
-        .bank-table td {
-            padding: 9px 14px;
-            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
-            color: var(--text-sub);
-            font-family: var(--font-mono);
-        }
-
-        .bank-table tr:last-child td {
-            border-bottom: none;
-        }
-
-        .bank-table tr:hover td {
-            background: rgba(255, 255, 255, 0.03);
-        }
-
         .bank-badge-crc {
             color: var(--accent-yellow);
             font-weight: 700;
@@ -546,37 +906,29 @@
             color: var(--accent-green);
         }
 
-        /* Additional Hashes Table */
-        .hash-table {
+        /* Diff Offset Table */
+        .diff-viewer-table {
             width: 100%;
             border-collapse: collapse;
-            font-size: 13px;
-        }
-
-        .hash-table tr {
-            border-bottom: 1px solid rgba(255, 255, 255, 0.05);
-        }
-
-        .hash-table tr:last-child {
-            border-bottom: none;
-        }
-
-        .hash-table td {
-            padding: 8px 0;
-            vertical-align: middle;
-        }
-
-        .hash-name {
-            width: 120px;
-            font-weight: 600;
-            color: var(--text-sub);
-        }
-
-        .hash-val {
-            font-family: var(--font-mono);
-            color: var(--text-main);
             font-size: 12px;
-            word-break: break-all;
+            font-family: var(--font-mono);
+        }
+
+        .diff-viewer-table th {
+            background: rgba(255, 255, 255, 0.06);
+            color: var(--accent-cyan);
+            padding: 8px 12px;
+            border-bottom: 1px solid var(--border-color);
+            text-align: left;
+        }
+
+        .diff-viewer-table td {
+            padding: 7px 12px;
+            border-bottom: 1px solid rgba(255, 255, 255, 0.04);
+        }
+
+        .diff-viewer-table tr:hover td {
+            background: rgba(255, 255, 255, 0.04);
         }
 
         /* Hex Dump Viewer */
@@ -639,13 +991,6 @@
             font-size: 12px;
             color: var(--text-muted);
         }
-
-        @media (max-width: 640px) {
-            body { padding: 14px; }
-            header { flex-direction: column; align-items: flex-start; }
-            .checksum-value { font-size: 15px; }
-            .checksum-grid { grid-template-columns: 1fr; }
-        }
     </style>
 </head>
 <body>
@@ -656,34 +1001,102 @@
             <div class="header-brand">
                 <div class="logo-icon">RTK</div>
                 <div class="header-title">
-                    <h1>Realtek Firmware & BIN Checksum Viewer</h1>
-                    <p>리얼텍 (RTDTool v3.1.3 / RTD Customer Tool v3.8) Bank 뱅크 분석 & 통합 첵섬 검증기</p>
+                    <h1>Realtek Firmware & BIN Checksum Dual Comparator</h1>
+                    <p>리얼텍 (RTDTool v3.1.3 / RTD Customer Tool v3.8) Bank 뱅크 분석 & 2개 BIN 파일 자동 비교기</p>
                 </div>
             </div>
-            <div class="badge-tag">Drag & Drop Ready</div>
+            <div class="header-badges">
+                <div class="badge-tag">Drag & Drop Ready</div>
+                <div class="badge-tag compare-badge">Dual BIN Compare Mode</div>
+            </div>
         </header>
 
-        <!-- Drop Zone (파일 열기 상자 & 드래그 타겟) -->
-        <div class="drop-zone" id="dropZone">
-            <input type="file" id="fileInput" accept=".bin,.hex,.uf2,.img,.dat,*">
-            <div class="drop-icon">
-                <svg width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
-                    <polyline points="17 8 12 3 7 8"></polyline>
-                    <line x1="12" y1="3" x2="12" y2="15"></line>
-                </svg>
-            </div>
-            <div class="drop-text" id="dropText">리얼텍 `.bin` 또는 분석할 바이너리 파일을 이곳으로 드래그하세요</div>
-            <div class="drop-subtext">클라이언트 브라우저에서 안전하게 고속 분석 (서버로 파일이 전송되지 않음)</div>
-            <div class="btn-group">
-                <button class="btn" onclick="document.getElementById('fileInput').click()">
-                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                        <path d="M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2z"></path>
+        <!-- Dual Slot Drop Zone Grid -->
+        <div class="drop-grid">
+            
+            <!-- Slot A: 기준 파일 (File 1) -->
+            <div class="drop-slot-card slot-a" id="dropSlotA">
+                <input type="file" id="fileInputA" class="hidden-input" accept=".bin,.hex,.uf2,.img,.dat,*">
+                <span class="slot-badge-label badge-slot-a">File A (기준 BIN)</span>
+                <div class="slot-actions-top">
+                    <button class="btn-clear-slot" onclick="clearSlot('A', event)">제거 ✕</button>
+                </div>
+
+                <div class="slot-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"></path>
+                        <polyline points="14 2 14 8 20 8"></polyline>
+                        <line x1="12" y1="18" x2="12" y2="12"></line>
+                        <line x1="9" y1="15" x2="15" y2="15"></line>
                     </svg>
-                    파일 열기
+                </div>
+
+                <div class="slot-empty-prompt">
+                    <div class="slot-title" id="slotATitle">기준 BIN 파일 드래그 & 드롭</div>
+                    <div class="slot-desc">비교의 기준이 될 1번째 바이너리 파일을 놓으세요</div>
+                </div>
+
+                <div class="slot-file-info" id="slotAInfo">
+                    <div style="font-weight:700; color:var(--accent-blue); margin-bottom:2px;" id="slotAName">-</div>
+                    <div style="color:var(--text-muted);" id="slotAMeta">-</div>
+                </div>
+
+                <div class="slot-btn-wrap">
+                    <button class="btn btn-sm" onclick="document.getElementById('fileInputA').click()">
+                        📂 파일 열기
+                    </button>
+                </div>
+            </div>
+
+            <!-- Slot B: 비교 대상 파일 (File 2) -->
+            <div class="drop-slot-card slot-b" id="dropSlotB">
+                <input type="file" id="fileInputB" class="hidden-input" accept=".bin,.hex,.uf2,.img,.dat,*">
+                <span class="slot-badge-label badge-slot-b">File B (비교 BIN)</span>
+                <div class="slot-actions-top">
+                    <button class="btn-clear-slot" onclick="clearSlot('B', event)">제거 ✕</button>
+                </div>
+
+                <div class="slot-icon">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M16 16v1a2 2 0 0 1-2 2H3a2 2 0 0 1-2-2V7a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2v1"></path>
+                        <path d="M18 8h4a2 2 0 0 1 2 2v7a2 2 0 0 1-2 2h-4"></path>
+                        <polyline points="10 9 9 9 8 9"></polyline>
+                    </svg>
+                </div>
+
+                <div class="slot-empty-prompt">
+                    <div class="slot-title" id="slotBTitle">2번째 BIN 파일 드래그 & 드롭</div>
+                    <div class="slot-desc">기준 파일과 비교할 대상 바이너리를 놓으면 자동 비교</div>
+                </div>
+
+                <div class="slot-file-info" id="slotBInfo">
+                    <div style="font-weight:700; color:var(--accent-purple); margin-bottom:2px;" id="slotBName">-</div>
+                    <div style="color:var(--text-muted);" id="slotBMeta">-</div>
+                </div>
+
+                <div class="slot-btn-wrap">
+                    <button class="btn btn-purple btn-sm" onclick="document.getElementById('fileInputB').click()">
+                        📂 2번째 파일 열기
+                    </button>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Master Quick Action Bar -->
+        <div class="master-bar">
+            <div class="master-bar-text">
+                <span>💡 <strong>Tip:</strong> 두 개의 BIN 파일을 화면 아무 곳에 동시에 드래그 & 드롭해도 자동으로 File A, B로 로드되어 즉시 비교됩니다.</span>
+            </div>
+            <div class="master-bar-buttons">
+                <button class="btn btn-secondary btn-sm" onclick="loadSampleScenario('identical')">
+                    ⚡ 샘플 (100% 일치 테스트)
                 </button>
-                <button class="btn btn-secondary" onclick="loadSampleFile(event)">
-                    ⚡ 샘플 Realtek BIN 테스트
+                <button class="btn btn-secondary btn-sm" onclick="loadSampleScenario('different')">
+                    ⚡ 샘플 (불일치 비교 테스트)
+                </button>
+                <button class="btn btn-secondary btn-sm" onclick="clearBothSlots()">
+                    🔄 초기화
                 </button>
             </div>
         </div>
@@ -691,7 +1104,7 @@
         <!-- Progress Bar -->
         <div class="progress-wrapper" id="progressWrapper">
             <div class="progress-header">
-                <span id="progressStatus">파일 읽는 중...</span>
+                <span id="progressStatus">파일 분석 중...</span>
                 <span id="progressPercent">0%</span>
             </div>
             <div class="progress-bar-bg">
@@ -699,179 +1112,405 @@
             </div>
         </div>
 
-        <!-- Results Section -->
-        <div class="results-container" id="resultsContainer">
+        <!-- Comparison Result Banner (Shown when 2 files are loaded) -->
+        <div class="compare-banner" id="compareBanner">
+            <div class="banner-header">
+                <div class="banner-main-title">
+                    <div class="banner-icon" id="bannerIcon">✅</div>
+                    <div class="banner-text">
+                        <h2 id="bannerTitle">두 파일이 100% 완전히 일치합니다</h2>
+                        <p id="bannerDesc">바이트 단위, 체크섬, 뱅크 구조가 모두 완벽하게 동일합니다.</p>
+                    </div>
+                </div>
+                <div class="banner-tag" id="bannerTag">100% IDENTICAL</div>
+            </div>
+
+            <div class="banner-stats-grid">
+                <div class="stat-card">
+                    <div class="stat-label">차이 발생 바이트</div>
+                    <div class="stat-val" id="statDiffBytes">0 Bytes (0.00%)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">파일 크기 비교</div>
+                    <div class="stat-val" id="statSizeDiff">크기 동일 (0 Bytes)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">최초 차이 오프셋</div>
+                    <div class="stat-val" id="statFirstDiff">없음 (None)</div>
+                </div>
+                <div class="stat-card">
+                    <div class="stat-label">뱅크(Bank) 일치 상태</div>
+                    <div class="stat-val" id="statBankMatch">모든 뱅크 일치</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Navigation Tabs (Only visible when at least 1 file loaded) -->
+        <div class="tabs-container" id="tabsContainer" style="display:none;">
+            <button class="tab-btn active" id="tabBtnCompare" onclick="switchTab('compare')">
+                <span>⚖️</span> 2개 BIN 비교 (Diff)
+            </button>
+            <button class="tab-btn" id="tabBtnFileA" onclick="switchTab('fileA')">
+                <span>📄</span> File A (기준 파일 상세)
+            </button>
+            <button class="tab-btn" id="tabBtnFileB" onclick="switchTab('fileB')">
+                <span>📄</span> File B (비교 대상 상세)
+            </button>
+        </div>
+
+        <!-- Tab 1: Compare View -->
+        <div class="tab-content active" id="tabCompareView">
             
-            <!-- 1 & 2. Realtek Dual Checksums Grid -->
-            <div class="checksum-grid">
-                
-                <!-- 1. RTD Customer Tool V3.8 Full Bank Sum -->
-                <div class="checksum-card featured-realtek-1">
-                    <div class="card-title">
-                        <div class="card-title-text">
-                            <span>🧮</span> 1. Big Bin CheckSum (v3.8)
-                        </div>
-                        <span class="card-tag tag-realtek1">RTD Tool v3.8 Full 64KB</span>
-                    </div>
-
-                    <div class="checksum-val-box">
-                        <span class="checksum-value val-yellow" id="sum32ChecksumVal">---- ---- (0x--------)</span>
-                        <button class="btn-copy" onclick="copyText('sum32ChecksumVal', 'v3.8 Full Bank Sum 복사됨!')">복사</button>
-                    </div>
-
-                    <div class="card-info">
-                        <strong>📌 계산 방식:</strong> 전체 64KB 뱅크 풀 바이트 Unsigned 32-bit 누적합<br>
-                        <strong>💡 상위/하위 분할:</strong> Upper: <span id="sum32High">0x0000</span> | Lower: <span id="sum32Low">0x0000</span>
-                    </div>
-                </div>
-
-                <!-- 2. RTDTool 3.1.3 Active Code Trimmed Sum -->
-                <div class="checksum-card featured-realtek-2">
-                    <div class="card-title">
-                        <div class="card-title-text">
-                            <span>⚡</span> 2. Big Bin CheckSum (v3.1.3)
-                        </div>
-                        <span class="card-tag tag-realtek2">RTD Tool v3.1.3 Trimmed</span>
-                    </div>
-
-                    <div class="checksum-val-box">
-                        <span class="checksum-value val-purple" id="trimmedChecksumVal">---- ---- (0x--------)</span>
-                        <button class="btn-copy" onclick="copyText('trimmedChecksumVal', 'v3.1.3 Trimmed Sum 복사됨!')">복사</button>
-                    </div>
-
-                    <div class="card-info">
-                        <strong>📌 계산 방식:</strong> 뱅크별 0xFF 패딩 제외 활성 코드 영역(Len) 32-bit 누적합<br>
-                        <strong>💡 뱅크 유효 크기:</strong> 활성 데이터 총합 <span id="trimmedTotalLen">0</span> Bytes
-                    </div>
-                </div>
-
-            </div>
-
-            <!-- File Metadata Card (Placed directly under Card 1 & 2) -->
-            <div class="info-card">
+            <!-- Side-by-Side Checksum Comparison Table -->
+            <div class="table-card" id="checksumCompareCard">
                 <div class="card-title">
                     <div class="card-title-text">
-                        <span>📄</span> 파일 메타데이터 정보
+                        <span>📊</span> Realtek & 표준 첵섬 Side-by-Side 비교표
                     </div>
-                </div>
-                <div class="info-grid">
-                    <div class="info-item">
-                        <div class="info-item-header">
-                            <div class="info-label">파일명</div>
-                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileName', '파일명 복사됨!')">복사</button>
-                        </div>
-                        <div class="info-val" id="metaFileName">-</div>
-                    </div>
-                    <div class="info-item">
-                        <div class="info-item-header">
-                            <div class="info-label">파일 크기</div>
-                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileSize', '파일 크기 복사됨!')">복사</button>
-                        </div>
-                        <div class="info-val" id="metaFileSize">-</div>
-                    </div>
-                    <div class="info-item">
-                        <div class="info-item-header">
-                            <div class="info-label">최종 수정일</div>
-                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileDate', '최종 수정일 복사됨!')">복사</button>
-                        </div>
-                        <div class="info-val" id="metaFileDate">-</div>
-                    </div>
-                    <div class="info-item">
-                        <div class="info-item-header">
-                            <div class="info-label">헤더 시그니처 / 타입</div>
-                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileType', '헤더 타입 복사됨!')">복사</button>
-                        </div>
-                        <div class="info-val" id="metaFileType">-</div>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Bank Breakdown Table (Bank 0 ~ Bank N) -->
-            <div class="bank-card">
-                <div class="card-title">
-                    <div class="card-title-text">
-                        <span>🏛️</span> Realtek Scaler Bank-by-Bank (뱅크별 CRC 및 Len 분석)
-                    </div>
-                    <span class="card-tag tag-realtek1">Bank 0 ~ Bank N</span>
+                    <span class="card-tag tag-realtek1">Checksum Comparison</span>
                 </div>
 
-                <div class="bank-table-wrapper">
-                    <table class="bank-table">
+                <div class="table-responsive">
+                    <table class="compare-table" id="compareSummaryTable">
                         <thead>
                             <tr>
-                                <th>Bank</th>
-                                <th>Offset</th>
-                                <th>Full Len</th>
-                                <th>Full CRC (8-bit)</th>
-                                <th>Trimmed Len (Code)</th>
-                                <th>Trimmed CRC (v3.1.3)</th>
-                                <th>32-bit Bank Sum</th>
+                                <th style="width: 26%;">검사 항목</th>
+                                <th style="width: 33%; color: var(--accent-blue);">File A (기준)</th>
+                                <th style="width: 33%; color: var(--accent-purple);">File B (비교 대상)</th>
+                                <th style="width: 8%; text-align: center;">결과</th>
                             </tr>
                         </thead>
-                        <tbody id="bankTableBody">
+                        <tbody id="compareSummaryTbody">
                             <!-- Populated dynamically -->
                         </tbody>
                     </table>
                 </div>
             </div>
 
-            <!-- Standard Hash & CRC Card -->
-            <div class="info-card">
+            <!-- Bank-by-Bank Comparison Table -->
+            <div class="table-card" id="bankCompareCard">
                 <div class="card-title">
                     <div class="card-title-text">
-                        <span>🔒</span> 일반 표준 첵섬 & Hash (기타 BIN 파일용)
+                        <span>🏛️</span> Realtek Bank-by-Bank 뱅크별 일치/불일치 정밀 비교
                     </div>
-                    <span class="card-tag tag-standard">Standard Checksums</span>
+                    <span class="card-tag tag-realtek2">Bank 0 ~ N Comparison</span>
                 </div>
 
-                <table class="hash-table">
-                    <tr>
-                        <td class="hash-name">CRC-32</td>
-                        <td class="hash-val" id="crc32Val">calculating...</td>
-                        <td style="width: 60px; text-align: right;">
-                            <button class="btn-copy" onclick="copyText('crc32Val', 'CRC-32 복사됨!')">복사</button>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td class="hash-name">16-bit Word Sum</td>
-                        <td class="hash-val" id="sum16Val">calculating...</td>
-                        <td style="text-align: right;">
-                            <button class="btn-copy" onclick="copyText('sum16Val', '16-bit Word Sum 복사됨!')">복사</button>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td class="hash-name">MD5 Hash</td>
-                        <td class="hash-val" id="md5Val">calculating...</td>
-                        <td style="text-align: right;">
-                            <button class="btn-copy" onclick="copyText('md5Val', 'MD5 Hash 복사됨!')">복사</button>
-                        </td>
-                    </tr>
-                    <tr>
-                        <td class="hash-name">SHA-256</td>
-                        <td class="hash-val" id="sha256Val">calculating...</td>
-                        <td style="text-align: right;">
-                            <button class="btn-copy" onclick="copyText('sha256Val', 'SHA-256 복사됨!')">복사</button>
-                        </td>
-                    </tr>
-                </table>
+                <div class="table-responsive">
+                    <table class="compare-table" id="compareBankTable">
+                        <thead>
+                            <tr>
+                                <th>Bank</th>
+                                <th>Offset</th>
+                                <th>File A Full CRC</th>
+                                <th>File B Full CRC</th>
+                                <th>File A v3.1.3 CRC</th>
+                                <th>File B v3.1.3 CRC</th>
+                                <th>Active Len (A vs B)</th>
+                                <th style="text-align: center;">Bank 일치</th>
+                            </tr>
+                        </thead>
+                        <tbody id="compareBankTbody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Byte Diff Viewer (Visible only when differences exist) -->
+            <div class="table-card" id="diffDetailsCard" style="display:none;">
+                <div class="card-title">
+                    <div class="card-title-text">
+                        <span>🔍</span> 상위 차이점 바이트 오프셋 상세 목록 (First Differing Bytes)
+                    </div>
+                    <span class="card-tag" style="background: rgba(248,113,113,0.2); color: var(--accent-red); border: 1px solid rgba(248,113,113,0.3);">Byte Diff List</span>
+                </div>
+
+                <div class="table-responsive" style="max-height: 280px; overflow-y: auto;">
+                    <table class="diff-viewer-table">
+                        <thead>
+                            <tr>
+                                <th>#</th>
+                                <th>오프셋 (Offset)</th>
+                                <th>해당 Bank</th>
+                                <th>File A (Hex / Char)</th>
+                                <th>File B (Hex / Char)</th>
+                                <th>차이 (A - B)</th>
+                            </tr>
+                        </thead>
+                        <tbody id="diffListTbody">
+                            <!-- Populated dynamically -->
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+        </div>
+
+        <!-- Tab 2: File A Detail View (Preserves Original Viewer UI) -->
+        <div class="tab-content" id="tabFileAView">
+            <!-- 1 & 2. Realtek Dual Checksums Grid -->
+            <div class="checksum-grid">
+                <div class="checksum-card featured-realtek-1">
+                    <div class="card-title">
+                        <div class="card-title-text"><span>🧮</span> 1. Big Bin CheckSum (v3.8)</div>
+                        <span class="card-tag tag-realtek1">RTD Tool v3.8 Full 64KB</span>
+                    </div>
+                    <div class="checksum-val-box">
+                        <span class="checksum-value val-yellow" id="sum32ChecksumValA">---- ---- (0x--------)</span>
+                        <button class="btn-copy" onclick="copyText('sum32ChecksumValA', 'File A v3.8 Checksum 복사됨!')">복사</button>
+                    </div>
+                    <div class="card-info">
+                        <strong>📌 계산 방식:</strong> 전체 64KB 뱅크 풀 바이트 Unsigned 32-bit 누적합<br>
+                        <strong>💡 상위/하위 분할:</strong> Upper: <span id="sum32HighA">0x0000</span> | Lower: <span id="sum32LowA">0x0000</span>
+                    </div>
+                </div>
+
+                <div class="checksum-card featured-realtek-2">
+                    <div class="card-title">
+                        <div class="card-title-text"><span>⚡</span> 2. Big Bin CheckSum (v3.1.3)</div>
+                        <span class="card-tag tag-realtek2">RTD Tool v3.1.3 Trimmed</span>
+                    </div>
+                    <div class="checksum-val-box">
+                        <span class="checksum-value val-purple" id="trimmedChecksumValA">---- ---- (0x--------)</span>
+                        <button class="btn-copy" onclick="copyText('trimmedChecksumValA', 'File A v3.1.3 Trimmed Sum 복사됨!')">복사</button>
+                    </div>
+                    <div class="card-info">
+                        <strong>📌 계산 방식:</strong> 뱅크별 0xFF 패딩 제외 활성 코드 영역(Len) 32-bit 누적합<br>
+                        <strong>💡 뱅크 유효 크기:</strong> 활성 데이터 총합 <span id="trimmedTotalLenA">0</span> Bytes
+                    </div>
+                </div>
+            </div>
+
+            <!-- Metadata Info -->
+            <div class="info-card">
+                <div class="card-title">
+                    <div class="card-title-text"><span>📄</span> File A 메타데이터 정보</div>
+                </div>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-item-header">
+                            <div class="info-label">파일명</div>
+                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileNameA', '파일명 복사됨!')">복사</button>
+                        </div>
+                        <div class="info-val" id="metaFileNameA">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-item-header">
+                            <div class="info-label">파일 크기</div>
+                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileSizeA', '파일 크기 복사됨!')">복사</button>
+                        </div>
+                        <div class="info-val" id="metaFileSizeA">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-item-header">
+                            <div class="info-label">최종 수정일</div>
+                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileDateA', '최종 수정일 복사됨!')">복사</button>
+                        </div>
+                        <div class="info-val" id="metaFileDateA">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-item-header">
+                            <div class="info-label">헤더 시그니처 / 타입</div>
+                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileTypeA', '헤더 타입 복사됨!')">복사</button>
+                        </div>
+                        <div class="info-val" id="metaFileTypeA">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bank Breakdown Table -->
+            <div class="table-card">
+                <div class="card-title">
+                    <div class="card-title-text"><span>🏛️</span> File A Bank-by-Bank (뱅크별 CRC 및 Len)</div>
+                    <span class="card-tag tag-realtek1">Bank 0 ~ Bank N</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="compare-table">
+                        <thead>
+                            <tr>
+                                <th>Bank</th>
+                                <th>Offset</th>
+                                <th>Full Len</th>
+                                <th>Full CRC (8-bit)</th>
+                                <th>Trimmed Len</th>
+                                <th>Trimmed CRC (v3.1.3)</th>
+                                <th>32-bit Bank Sum</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bankTableBodyA"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Standard Hashes -->
+            <div class="info-card">
+                <div class="card-title">
+                    <div class="card-title-text"><span>🔒</span> File A 일반 표준 첵섬 & Hash</div>
+                </div>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">CRC-32</div>
+                        <div class="info-val" id="crc32ValA">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">16-bit Word Sum</div>
+                        <div class="info-val" id="sum16ValA">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">MD5 Hash</div>
+                        <div class="info-val" id="md5ValA">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">SHA-256</div>
+                        <div class="info-val" id="sha256ValA">-</div>
+                    </div>
+                </div>
             </div>
 
             <!-- Hex Header Preview -->
             <div class="hex-card">
                 <div class="hex-header">
-                    <div class="card-title-text">
-                        <span>🔍</span> 파일 헤더 Hex Dump (시작 256 Bytes)
-                    </div>
-                    <button class="btn-copy" onclick="copyText('hexDumpText', 'Hex Dump 복사됨!')">Hex 복사</button>
+                    <div class="card-title-text"><span>🔍</span> File A 시작 256 Bytes Hex Dump</div>
+                    <button class="btn-copy" onclick="copyText('hexDumpTextA', 'Hex Dump 복사됨!')">Hex 복사</button>
                 </div>
-                <div class="hex-viewer" id="hexDumpText">Hex Dump 준비 중...</div>
+                <div class="hex-viewer" id="hexDumpTextA">-</div>
+            </div>
+        </div>
+
+        <!-- Tab 3: File B Detail View -->
+        <div class="tab-content" id="tabFileBView">
+            <div class="checksum-grid">
+                <div class="checksum-card featured-realtek-1">
+                    <div class="card-title">
+                        <div class="card-title-text"><span>🧮</span> 1. Big Bin CheckSum (v3.8)</div>
+                        <span class="card-tag tag-realtek1">RTD Tool v3.8 Full 64KB</span>
+                    </div>
+                    <div class="checksum-val-box">
+                        <span class="checksum-value val-yellow" id="sum32ChecksumValB">---- ---- (0x--------)</span>
+                        <button class="btn-copy" onclick="copyText('sum32ChecksumValB', 'File B v3.8 Checksum 복사됨!')">복사</button>
+                    </div>
+                    <div class="card-info">
+                        <strong>📌 계산 방식:</strong> 전체 64KB 뱅크 풀 바이트 Unsigned 32-bit 누적합<br>
+                        <strong>💡 상위/하위 분할:</strong> Upper: <span id="sum32HighB">0x0000</span> | Lower: <span id="sum32LowB">0x0000</span>
+                    </div>
+                </div>
+
+                <div class="checksum-card featured-realtek-2">
+                    <div class="card-title">
+                        <div class="card-title-text"><span>⚡</span> 2. Big Bin CheckSum (v3.1.3)</div>
+                        <span class="card-tag tag-realtek2">RTD Tool v3.1.3 Trimmed</span>
+                    </div>
+                    <div class="checksum-val-box">
+                        <span class="checksum-value val-purple" id="trimmedChecksumValB">---- ---- (0x--------)</span>
+                        <button class="btn-copy" onclick="copyText('trimmedChecksumValB', 'File B v3.1.3 Trimmed Sum 복사됨!')">복사</button>
+                    </div>
+                    <div class="card-info">
+                        <strong>📌 계산 방식:</strong> 뱅크별 0xFF 패딩 제외 활성 코드 영역(Len) 32-bit 누적합<br>
+                        <strong>💡 뱅크 유효 크기:</strong> 활성 데이터 총합 <span id="trimmedTotalLenB">0</span> Bytes
+                    </div>
+                </div>
             </div>
 
+            <!-- Metadata Info -->
+            <div class="info-card">
+                <div class="card-title">
+                    <div class="card-title-text"><span>📄</span> File B 메타데이터 정보</div>
+                </div>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-item-header">
+                            <div class="info-label">파일명</div>
+                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileNameB', '파일명 복사됨!')">복사</button>
+                        </div>
+                        <div class="info-val" id="metaFileNameB">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-item-header">
+                            <div class="info-label">파일 크기</div>
+                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileSizeB', '파일 크기 복사됨!')">복사</button>
+                        </div>
+                        <div class="info-val" id="metaFileSizeB">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-item-header">
+                            <div class="info-label">최종 수정일</div>
+                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileDateB', '최종 수정일 복사됨!')">복사</button>
+                        </div>
+                        <div class="info-val" id="metaFileDateB">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-item-header">
+                            <div class="info-label">헤더 시그니처 / 타입</div>
+                            <button class="btn-copy btn-copy-sm" onclick="copyText('metaFileTypeB', '헤더 타입 복사됨!')">복사</button>
+                        </div>
+                        <div class="info-val" id="metaFileTypeB">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Bank Breakdown Table -->
+            <div class="table-card">
+                <div class="card-title">
+                    <div class="card-title-text"><span>🏛️</span> File B Bank-by-Bank (뱅크별 CRC 및 Len)</div>
+                    <span class="card-tag tag-realtek1">Bank 0 ~ Bank N</span>
+                </div>
+                <div class="table-responsive">
+                    <table class="compare-table">
+                        <thead>
+                            <tr>
+                                <th>Bank</th>
+                                <th>Offset</th>
+                                <th>Full Len</th>
+                                <th>Full CRC (8-bit)</th>
+                                <th>Trimmed Len</th>
+                                <th>Trimmed CRC (v3.1.3)</th>
+                                <th>32-bit Bank Sum</th>
+                            </tr>
+                        </thead>
+                        <tbody id="bankTableBodyB"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- Standard Hashes -->
+            <div class="info-card">
+                <div class="card-title">
+                    <div class="card-title-text"><span>🔒</span> File B 일반 표준 첵섬 & Hash</div>
+                </div>
+                <div class="info-grid">
+                    <div class="info-item">
+                        <div class="info-label">CRC-32</div>
+                        <div class="info-val" id="crc32ValB">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">16-bit Word Sum</div>
+                        <div class="info-val" id="sum16ValB">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">MD5 Hash</div>
+                        <div class="info-val" id="md5ValB">-</div>
+                    </div>
+                    <div class="info-item">
+                        <div class="info-label">SHA-256</div>
+                        <div class="info-val" id="sha256ValB">-</div>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Hex Header Preview -->
+            <div class="hex-card">
+                <div class="hex-header">
+                    <div class="card-title-text"><span>🔍</span> File B 시작 256 Bytes Hex Dump</div>
+                    <button class="btn-copy" onclick="copyText('hexDumpTextB', 'Hex Dump 복사됨!')">Hex 복사</button>
+                </div>
+                <div class="hex-viewer" id="hexDumpTextB">-</div>
+            </div>
         </div>
 
         <!-- Footer -->
         <footer>
-            Realtek Scaler & Firmware BIN Checksum Analyzer | Bank 0~7 & RTDTool v3.1.3 / v3.8 Integration
+            Realtek Scaler & Firmware BIN Dual Checksum Comparator | Bank 0~7 & RTDTool v3.1.3 / v3.8 Integration
         </footer>
     </div>
 
@@ -879,17 +1518,28 @@
     <div class="toast" id="toast">알림 메시지</div>
 
     <script>
-        const dropZone = document.getElementById('dropZone');
-        const fileInput = document.getElementById('fileInput');
-        const dropText = document.getElementById('dropText');
+        // State Management for Both Files
+        const state = {
+            fileA: null,
+            analysisA: null,
+            fileB: null,
+            analysisB: null,
+            comparison: null
+        };
+
+        const dropSlotA = document.getElementById('dropSlotA');
+        const dropSlotB = document.getElementById('dropSlotB');
+        const fileInputA = document.getElementById('fileInputA');
+        const fileInputB = document.getElementById('fileInputB');
         const progressWrapper = document.getElementById('progressWrapper');
         const progressBarFill = document.getElementById('progressBarFill');
         const progressStatus = document.getElementById('progressStatus');
         const progressPercent = document.getElementById('progressPercent');
-        const resultsContainer = document.getElementById('resultsContainer');
+        const compareBanner = document.getElementById('compareBanner');
+        const tabsContainer = document.getElementById('tabsContainer');
         const toast = document.getElementById('toast');
 
-        // Prevent browser default file open behavior anywhere on the window
+        // Global Drag & Drop Handler
         window.addEventListener('dragover', (e) => {
             e.preventDefault();
             e.stopPropagation();
@@ -898,55 +1548,94 @@
         window.addEventListener('drop', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            dropZone.classList.remove('dragover');
-            if (e.dataTransfer && e.dataTransfer.files.length > 0) {
-                processFile(e.dataTransfer.files[0]);
+            dropSlotA.classList.remove('dragover');
+            dropSlotB.classList.remove('dragover');
+
+            const files = e.dataTransfer ? e.dataTransfer.files : [];
+            if (!files || files.length === 0) return;
+
+            if (files.length >= 2) {
+                // Dual file drop anywhere!
+                handleFileSelect('A', files[0]);
+                handleFileSelect('B', files[1]);
+            } else if (files.length === 1) {
+                // If Slot A is empty, put into A. If A is loaded, put into B.
+                if (!state.fileA) {
+                    handleFileSelect('A', files[0]);
+                } else {
+                    handleFileSelect('B', files[0]);
+                }
             }
         });
 
-        // Dedicated Drop Zone element drag focus handlers
-        let dropZoneDragCounter = 0;
-
-        dropZone.addEventListener('dragenter', (e) => {
+        // Dedicated Drop Slot A handlers
+        dropSlotA.addEventListener('dragenter', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            dropZoneDragCounter++;
-            dropZone.classList.add('dragover');
-            dropText.innerText = "📂 파일 손을 놓으면 분석이 시작됩니다!";
+            dropSlotA.classList.add('dragover');
         });
-
-        dropZone.addEventListener('dragover', (e) => {
+        dropSlotA.addEventListener('dragover', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            dropZone.classList.add('dragover');
+            dropSlotA.classList.add('dragover');
         });
-
-        dropZone.addEventListener('dragleave', (e) => {
+        dropSlotA.addEventListener('dragleave', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            dropZoneDragCounter--;
-            if (dropZoneDragCounter <= 0) {
-                dropZoneDragCounter = 0;
-                dropZone.classList.remove('dragover');
-                dropText.innerText = "리얼텍 `.bin` 또는 분석할 바이너리 파일을 이곳으로 드래그하세요";
+            dropSlotA.classList.remove('dragover');
+        });
+        dropSlotA.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropSlotA.classList.remove('dragover');
+            const files = e.dataTransfer ? e.dataTransfer.files : [];
+            if (files.length >= 2) {
+                handleFileSelect('A', files[0]);
+                handleFileSelect('B', files[1]);
+            } else if (files.length === 1) {
+                handleFileSelect('A', files[0]);
             }
         });
 
-        dropZone.addEventListener('drop', (e) => {
+        // Dedicated Drop Slot B handlers
+        dropSlotB.addEventListener('dragenter', (e) => {
             e.preventDefault();
             e.stopPropagation();
-            dropZoneDragCounter = 0;
-            dropZone.classList.remove('dragover');
-            dropText.innerText = "리얼텍 `.bin` 또는 분석할 바이너리 파일을 이곳으로 드래그하세요";
-            const dt = e.dataTransfer;
-            if (dt && dt.files && dt.files.length > 0) {
-                processFile(dt.files[0]);
+            dropSlotB.classList.add('dragover');
+        });
+        dropSlotB.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropSlotB.classList.add('dragover');
+        });
+        dropSlotB.addEventListener('dragleave', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropSlotB.classList.remove('dragover');
+        });
+        dropSlotB.addEventListener('drop', (e) => {
+            e.preventDefault();
+            e.stopPropagation();
+            dropSlotB.classList.remove('dragover');
+            const files = e.dataTransfer ? e.dataTransfer.files : [];
+            if (files.length >= 2) {
+                handleFileSelect('A', files[0]);
+                handleFileSelect('B', files[1]);
+            } else if (files.length === 1) {
+                handleFileSelect('B', files[0]);
             }
         });
 
-        fileInput.addEventListener('change', (e) => {
-            if (e.target.files.length > 0) {
-                processFile(e.target.files[0]);
+        // File Inputs
+        fileInputA.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files.length > 0) {
+                handleFileSelect('A', e.target.files[0]);
+            }
+        });
+
+        fileInputB.addEventListener('change', (e) => {
+            if (e.target.files && e.target.files.length > 0) {
+                handleFileSelect('B', e.target.files[0]);
             }
         });
 
@@ -969,18 +1658,61 @@
             });
         }
 
-        // Realtek Big Bin filename identifier extraction
-        function extractBigBinFromFilename(filename) {
-            if (!filename) return null;
-            const match = filename.match(/0[xX]([0-9a-fA-F]{8})/);
-            if (match && match[1]) {
-                const hex = match[1].toUpperCase();
-                return hex.substring(0, 4) + ' ' + hex.substring(4, 8);
+        function switchTab(tabId) {
+            document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active'));
+            document.querySelectorAll('.tab-content').forEach(content => content.classList.remove('active'));
+
+            if (tabId === 'compare') {
+                document.getElementById('tabBtnCompare').classList.add('active');
+                document.getElementById('tabCompareView').classList.add('active');
+            } else if (tabId === 'fileA') {
+                document.getElementById('tabBtnFileA').classList.add('active');
+                document.getElementById('tabFileAView').classList.add('active');
+            } else if (tabId === 'fileB') {
+                document.getElementById('tabBtnFileB').classList.add('active');
+                document.getElementById('tabFileBView').classList.add('active');
             }
-            return null;
         }
 
-        // CRC-32 Table Generation
+        function clearSlot(slot, e) {
+            if (e) e.stopPropagation();
+            if (slot === 'A') {
+                state.fileA = null;
+                state.analysisA = null;
+                dropSlotA.classList.remove('loaded');
+                document.getElementById('slotATitle').innerText = '기준 BIN 파일 드래그 & 드롭';
+                document.getElementById('slotAName').innerText = '-';
+                document.getElementById('slotAMeta').innerText = '-';
+                fileInputA.value = '';
+            } else {
+                state.fileB = null;
+                state.analysisB = null;
+                dropSlotB.classList.remove('loaded');
+                document.getElementById('slotBTitle').innerText = '2번째 BIN 파일 드래그 & 드롭';
+                document.getElementById('slotBName').innerText = '-';
+                document.getElementById('slotBMeta').innerText = '-';
+                fileInputB.value = '';
+            }
+            state.comparison = null;
+            updateUIAfterStateChange();
+        }
+
+        function clearBothSlots() {
+            clearSlot('A');
+            clearSlot('B');
+            showToast('🔄 모든 파일이 초기화되었습니다.');
+        }
+
+        // Format Byte Size
+        function formatBytes(bytes) {
+            if (bytes === 0) return '0 Bytes';
+            const k = 1024;
+            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+            const i = Math.floor(Math.log(bytes) / Math.log(k));
+            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i] + ' (' + bytes.toLocaleString() + ' B)';
+        }
+
+        // CRC-32
         const crc32Table = new Uint32Array(256);
         for (let i = 0; i < 256; i++) {
             let c = i;
@@ -998,7 +1730,7 @@
             return ((crc ^ 0xFFFFFFFF) >>> 0).toString(16).padStart(8, '0').toUpperCase();
         }
 
-        // Standard MD5 Implementation for browser
+        // MD5 implementation
         function md5cycle(x, k) {
             var a = x[0], b = x[1], c = x[2], d = x[3];
             a = ff(a, b, c, d, k[0], 7, -680876936); d = ff(d, a, b, c, k[1], 12, -389564586); c = ff(c, d, a, b, k[2], 17, 606105819); b = ff(b, c, d, a, k[3], 22, -1044525330);
@@ -1036,7 +1768,7 @@
             return md5blks;
         }
         function calculateMD5(bytes) {
-            var n = bytes.length, state = [1732584193, -271733879, -1732584194, 271733878], i, length, tail, padLen;
+            var n = bytes.length, state = [1732584193, -271733879, -1732584194, 271733878], i, tail;
             for (i = 64; i <= bytes.length; i += 64) {
                 md5cycle(state, md5blk(bytes.subarray(i - 64, i)));
             }
@@ -1064,21 +1796,8 @@
             }
             return r.toUpperCase();
         }
+        function add32(a, b) { return (a + b) & 0xFFFFFFFF; }
 
-        function add32(a, b) {
-            return (a + b) & 0xFFFFFFFF;
-        }
-
-        // Format Byte Size
-        function formatBytes(bytes) {
-            if (bytes === 0) return '0 Bytes';
-            const k = 1024;
-            const sizes = ['Bytes', 'KB', 'MB', 'GB'];
-            const i = Math.floor(Math.log(bytes) / Math.log(k));
-            return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i] + ' (' + bytes.toLocaleString() + ' Bytes)';
-        }
-
-        // Generate Hex Dump
         function generateHexDump(bytes, maxBytes = 256) {
             const limit = Math.min(bytes.length, maxBytes);
             let lines = [];
@@ -1103,7 +1822,6 @@
             return lines.join('\n');
         }
 
-        // Detect Magic File Signature
         function detectHeaderSignature(bytes) {
             if (bytes.length < 4) return 'Binary Data';
             const hex4 = Array.from(bytes.subarray(0, 4)).map(b => b.toString(16).padStart(2, '0').toUpperCase()).join('');
@@ -1115,10 +1833,8 @@
             return 'Realtek / RAW Firmware Binary (.bin)';
         }
 
-        // Helper: Find trimmed length (trailing 0xFF or 0x00)
         function findTrimmedLength(bankBytes) {
             if (bankBytes.length === 0) return 0;
-            // Check trailing 0xFF padding
             let endIdx = bankBytes.length - 1;
             while (endIdx >= 0 && bankBytes[endIdx] === 0xFF) {
                 endIdx--;
@@ -1126,191 +1842,556 @@
             return endIdx + 1;
         }
 
-        async function processFile(file) {
+        // Full analysis calculation for a single binary file buffer
+        async function analyzeBinaryBuffer(buffer, file) {
+            const bytes = new Uint8Array(buffer);
+            let totalSum = 0;
+            let wordSum16 = 0;
+
+            for (let i = 0; i < bytes.length; i++) {
+                totalSum = (totalSum + bytes[i]) >>> 0;
+            }
+
+            for (let i = 0; i < bytes.length - 1; i += 2) {
+                const word = (bytes[i + 1] << 8) | bytes[i];
+                wordSum16 = (wordSum16 + word) & 0xFFFF;
+            }
+
+            const sum32H = ((totalSum >>> 16) & 0xFFFF).toString(16).padStart(4, '0').toUpperCase();
+            const sum32L = (totalSum & 0xFFFF).toString(16).padStart(4, '0').toUpperCase();
+            const sum32Hex = totalSum.toString(16).padStart(8, '0').toUpperCase();
+
+            // Bank Analysis (64KB per bank)
+            const BANK_SIZE = 65536;
+            const numBanks = Math.max(1, Math.ceil(bytes.length / BANK_SIZE));
+            const banks = [];
+
+            let trimmedTotalSum = 0;
+            let trimmedTotalBytesCount = 0;
+
+            for (let b = 0; b < numBanks; b++) {
+                const start = b * BANK_SIZE;
+                const end = Math.min(bytes.length, (b + 1) * BANK_SIZE);
+                const bankBytes = bytes.subarray(start, end);
+
+                let fullBankSum32 = 0;
+                for (let i = 0; i < bankBytes.length; i++) {
+                    fullBankSum32 = (fullBankSum32 + bankBytes[i]) >>> 0;
+                }
+                const fullBankCRC = (fullBankSum32 & 0xFF).toString(16).padStart(2, '0').toUpperCase();
+
+                const trimmedLen = findTrimmedLength(bankBytes);
+                let trimmedBankSum32 = 0;
+                for (let i = 0; i < trimmedLen; i++) {
+                    trimmedBankSum32 = (trimmedBankSum32 + bankBytes[i]) >>> 0;
+                }
+                const trimmedCRC = (trimmedBankSum32 & 0xFF).toString(16).padStart(2, '0').toUpperCase();
+
+                trimmedTotalSum = (trimmedTotalSum + trimmedBankSum32) >>> 0;
+                trimmedTotalBytesCount += trimmedLen;
+
+                banks.push({
+                    bankIndex: b,
+                    offset: start,
+                    offsetHex: '0x' + start.toString(16).padStart(5, '0').toUpperCase(),
+                    fullLength: bankBytes.length,
+                    fullBankCRC: fullBankCRC,
+                    fullBankSum32: fullBankSum32,
+                    fullBankSumHex: '0x' + fullBankSum32.toString(16).padStart(8, '0').toUpperCase(),
+                    trimmedLength: trimmedLen,
+                    trimmedCRC: trimmedCRC,
+                    trimmedBankSum32: trimmedBankSum32
+                });
+            }
+
+            const trimmedH = ((trimmedTotalSum >>> 16) & 0xFFFF).toString(16).padStart(4, '0').toUpperCase();
+            const trimmedL = (trimmedTotalSum & 0xFFFF).toString(16).padStart(4, '0').toUpperCase();
+            const trimmedHex = trimmedTotalSum.toString(16).padStart(8, '0').toUpperCase();
+
+            const crc32Val = calculateCRC32(bytes);
+            const md5Val = calculateMD5(bytes);
+
+            let sha256Val = 'N/A';
+            try {
+                if (window.crypto && window.crypto.subtle) {
+                    const hashBuffer = await window.crypto.subtle.digest('SHA-256', buffer);
+                    const hashArray = Array.from(new Uint8Array(hashBuffer));
+                    sha256Val = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
+                }
+            } catch (err) {}
+
+            return {
+                name: file.name,
+                size: file.size,
+                lastModified: file.lastModified,
+                bytes: bytes,
+                totalSum: totalSum,
+                sum32Formatted: `${sum32H} ${sum32L} (0x${sum32Hex})`,
+                sum32H: '0x' + sum32H,
+                sum32L: '0x' + sum32L,
+                sum32Hex: '0x' + sum32Hex,
+                trimmedTotalSum: trimmedTotalSum,
+                trimmedFormatted: `${trimmedH} ${trimmedL} (0x${trimmedHex})`,
+                trimmedHex: '0x' + trimmedHex,
+                trimmedTotalBytesCount: trimmedTotalBytesCount,
+                wordSum16Hex: '0x' + wordSum16.toString(16).padStart(4, '0').toUpperCase(),
+                crc32Val: '0x' + crc32Val,
+                md5Val: md5Val,
+                sha256Val: sha256Val,
+                headerSignature: detectHeaderSignature(bytes),
+                hexDump256: generateHexDump(bytes, 256),
+                banks: banks
+            };
+        }
+
+        // Compare Two Analyzed Files
+        function compareBinaries(resA, resB) {
+            const bytesA = resA.bytes;
+            const bytesB = resB.bytes;
+            const lenA = bytesA.length;
+            const lenB = bytesB.length;
+            const maxLen = Math.max(lenA, lenB);
+            const minLen = Math.min(lenA, lenB);
+
+            let diffBytesCount = 0;
+            let firstDiffOffset = -1;
+            const diffSampleList = [];
+            const MAX_DIFF_SAMPLES = 50;
+
+            for (let i = 0; i < minLen; i++) {
+                if (bytesA[i] !== bytesB[i]) {
+                    diffBytesCount++;
+                    if (firstDiffOffset === -1) {
+                        firstDiffOffset = i;
+                    }
+                    if (diffSampleList.length < MAX_DIFF_SAMPLES) {
+                        diffSampleList.push({
+                            index: diffBytesCount,
+                            offset: i,
+                            offsetHex: '0x' + i.toString(16).padStart(6, '0').toUpperCase(),
+                            bank: Math.floor(i / 65536),
+                            valA: bytesA[i],
+                            valB: bytesB[i],
+                            diff: bytesA[i] - bytesB[i]
+                        });
+                    }
+                }
+            }
+
+            // Excess bytes in longer file
+            if (lenA !== lenB) {
+                const sizeDiff = Math.abs(lenA - lenB);
+                diffBytesCount += sizeDiff;
+                if (firstDiffOffset === -1) {
+                    firstDiffOffset = minLen;
+                }
+            }
+
+            const isIdentical = (lenA === lenB && diffBytesCount === 0);
+            const diffPct = maxLen > 0 ? ((diffBytesCount / maxLen) * 100).toFixed(4) : 0;
+
+            // Bank Level Compare
+            const maxBanks = Math.max(resA.banks.length, resB.banks.length);
+            const bankCompares = [];
+            let matchingBanksCount = 0;
+
+            for (let b = 0; b < maxBanks; b++) {
+                const bankA = resA.banks[b] || null;
+                const bankB = resB.banks[b] || null;
+
+                const matchFullCRC = bankA && bankB && (bankA.fullBankCRC === bankB.fullBankCRC);
+                const matchTrimmedCRC = bankA && bankB && (bankA.trimmedCRC === bankB.trimmedCRC);
+                const matchTrimmedLen = bankA && bankB && (bankA.trimmedLength === bankB.trimmedLength);
+                const matchFullLen = bankA && bankB && (bankA.fullLength === bankB.fullLength);
+                const bankMatch = matchFullCRC && matchTrimmedCRC && matchTrimmedLen && matchFullLen;
+
+                if (bankMatch) matchingBanksCount++;
+
+                bankCompares.push({
+                    bankIndex: b,
+                    offsetHex: bankA ? bankA.offsetHex : (bankB ? bankB.offsetHex : '-'),
+                    bankA: bankA,
+                    bankB: bankB,
+                    matchFullCRC: matchFullCRC,
+                    matchTrimmedCRC: matchTrimmedCRC,
+                    matchTrimmedLen: matchTrimmedLen,
+                    bankMatch: bankMatch
+                });
+            }
+
+            return {
+                isIdentical: isIdentical,
+                diffBytesCount: diffBytesCount,
+                diffPercentage: diffPct,
+                firstDiffOffset: firstDiffOffset,
+                firstDiffHex: firstDiffOffset !== -1 ? '0x' + firstDiffOffset.toString(16).padStart(6, '0').toUpperCase() : 'None',
+                firstDiffBank: firstDiffOffset !== -1 ? Math.floor(firstDiffOffset / 65536) : -1,
+                sizeDiff: lenB - lenA,
+                sameSize: lenA === lenB,
+                diffSampleList: diffSampleList,
+                bankCompares: bankCompares,
+                matchingBanksCount: matchingBanksCount,
+                totalBanks: maxBanks
+            };
+        }
+
+        // Render Single File Detail (Tab A or Tab B)
+        function renderSingleFileDetails(slot, analysis) {
+            const suffix = slot;
+            document.getElementById(`sum32ChecksumVal${suffix}`).innerText = analysis.sum32Formatted;
+            document.getElementById(`sum32High${suffix}`).innerText = analysis.sum32H;
+            document.getElementById(`sum32Low${suffix}`).innerText = analysis.sum32L;
+
+            document.getElementById(`trimmedChecksumVal${suffix}`).innerText = analysis.trimmedFormatted;
+            document.getElementById(`trimmedTotalLen${suffix}`).innerText = analysis.trimmedTotalBytesCount.toLocaleString();
+
+            document.getElementById(`metaFileName${suffix}`).innerText = analysis.name;
+            document.getElementById(`metaFileSize${suffix}`).innerText = formatBytes(analysis.size);
+            document.getElementById(`metaFileDate${suffix}`).innerText = new Date(analysis.lastModified).toLocaleString('ko-KR');
+            document.getElementById(`metaFileType${suffix}`).innerText = analysis.headerSignature;
+
+            document.getElementById(`crc32Val${suffix}`).innerText = analysis.crc32Val;
+            document.getElementById(`sum16Val${suffix}`).innerText = analysis.wordSum16Hex;
+            document.getElementById(`md5Val${suffix}`).innerText = analysis.md5Val;
+            document.getElementById(`sha256Val${suffix}`).innerText = analysis.sha256Val;
+            document.getElementById(`hexDumpText${suffix}`).innerText = analysis.hexDump256;
+
+            const tbody = document.getElementById(`bankTableBody${suffix}`);
+            tbody.innerHTML = '';
+            analysis.banks.forEach(bk => {
+                const tr = document.createElement('tr');
+                tr.innerHTML = `
+                    <td><strong>Bank ${bk.bankIndex}</strong></td>
+                    <td>${bk.offsetHex}</td>
+                    <td class="bank-badge-len">${bk.fullLength.toLocaleString()} B</td>
+                    <td><span class="bank-badge-crc">${bk.fullBankCRC}</span></td>
+                    <td style="color: var(--accent-cyan); font-weight: 600;">${bk.trimmedLength.toLocaleString()} B</td>
+                    <td><span class="bank-badge-crc" style="color: var(--accent-purple); border-color: rgba(192,132,252,0.3); background: rgba(192,132,252,0.1);">${bk.trimmedCRC}</span></td>
+                    <td>${bk.fullBankSumHex}</td>
+                `;
+                tbody.appendChild(tr);
+            });
+        }
+
+        // Render Comparison UI
+        function renderComparisonUI(cmp, a, b) {
+            compareBanner.style.display = 'block';
+            compareBanner.className = 'compare-banner ' + (cmp.isIdentical ? 'identical' : 'different');
+
+            const bannerIcon = document.getElementById('bannerIcon');
+            const bannerTitle = document.getElementById('bannerTitle');
+            const bannerDesc = document.getElementById('bannerDesc');
+            const bannerTag = document.getElementById('bannerTag');
+
+            if (cmp.isIdentical) {
+                bannerIcon.innerText = '✅';
+                bannerTitle.innerText = '두 BIN 파일이 100% 완전히 일치합니다';
+                bannerDesc.innerText = '바이트 단위 바이너리, RTD v3.8 / v3.1.3 첵섬, Bank별 구조가 모두 완벽하게 동일합니다.';
+                bannerTag.innerText = '100% IDENTICAL';
+                bannerTag.className = 'banner-tag';
+            } else {
+                bannerIcon.innerText = '⚠️';
+                bannerTitle.innerText = '두 BIN 파일에 차이가 있습니다';
+                bannerDesc.innerText = `바이트 내용 또는 구조에 불일치가 발견되었습니다. (${cmp.diffBytesCount.toLocaleString()} 바이트 상이)`;
+                bannerTag.innerText = 'DIFFERENT';
+                bannerTag.className = 'banner-tag';
+            }
+
+            // Stats Grid
+            document.getElementById('statDiffBytes').innerText = `${cmp.diffBytesCount.toLocaleString()} Bytes (${cmp.diffPercentage}%)`;
+            if (cmp.sameSize) {
+                document.getElementById('statSizeDiff').innerText = `크기 동일 (${a.size.toLocaleString()} B)`;
+            } else {
+                const sign = cmp.sizeDiff > 0 ? `+${cmp.sizeDiff.toLocaleString()}` : `${cmp.sizeDiff.toLocaleString()}`;
+                document.getElementById('statSizeDiff').innerText = `크기 상이 (Δ ${sign} B)`;
+            }
+
+            if (cmp.firstDiffOffset !== -1) {
+                document.getElementById('statFirstDiff').innerText = `${cmp.firstDiffHex} (Bank ${cmp.firstDiffBank})`;
+            } else {
+                document.getElementById('statFirstDiff').innerText = '없음 (None)';
+            }
+
+            document.getElementById('statBankMatch').innerText = `${cmp.matchingBanksCount} / ${cmp.totalBanks} 뱅크 일치`;
+
+            // Comparison Table (Side-by-Side)
+            const summaryTbody = document.getElementById('compareSummaryTbody');
+            summaryTbody.innerHTML = '';
+
+            const compItems = [
+                {
+                    label: '파일명 (File Name)',
+                    valA: a.name,
+                    valB: b.name,
+                    isMatch: a.name === b.name
+                },
+                {
+                    label: '파일 크기 (Size)',
+                    valA: formatBytes(a.size),
+                    valB: formatBytes(b.size),
+                    isMatch: a.size === b.size
+                },
+                {
+                    label: 'RTD v3.8 Full Bank Sum',
+                    valA: a.sum32Formatted,
+                    valB: b.sum32Formatted,
+                    isMatch: a.totalSum === b.totalSum
+                },
+                {
+                    label: 'RTD v3.1.3 Trimmed Sum',
+                    valA: a.trimmedFormatted,
+                    valB: b.trimmedFormatted,
+                    isMatch: a.trimmedTotalSum === b.trimmedTotalSum
+                },
+                {
+                    label: '활성 코드 총합 (Trimmed Len)',
+                    valA: `${a.trimmedTotalBytesCount.toLocaleString()} Bytes`,
+                    valB: `${b.trimmedTotalBytesCount.toLocaleString()} Bytes`,
+                    isMatch: a.trimmedTotalBytesCount === b.trimmedTotalBytesCount
+                },
+                {
+                    label: 'CRC-32 Checksum',
+                    valA: a.crc32Val,
+                    valB: b.crc32Val,
+                    isMatch: a.crc32Val === b.crc32Val
+                },
+                {
+                    label: '16-bit Word Sum',
+                    valA: a.wordSum16Hex,
+                    valB: b.wordSum16Hex,
+                    isMatch: a.wordSum16Hex === b.wordSum16Hex
+                },
+                {
+                    label: 'MD5 Hash',
+                    valA: a.md5Val,
+                    valB: b.md5Val,
+                    isMatch: a.md5Val === b.md5Val
+                },
+                {
+                    label: 'SHA-256 Hash',
+                    valA: a.sha256Val,
+                    valB: b.sha256Val,
+                    isMatch: a.sha256Val === b.sha256Val
+                }
+            ];
+
+            compItems.forEach(item => {
+                const tr = document.createElement('tr');
+                if (!item.isMatch) tr.classList.add('row-diff');
+                tr.innerHTML = `
+                    <td><strong>${item.label}</strong></td>
+                    <td class="${item.isMatch ? '' : 'cell-diff'}">${item.valA}</td>
+                    <td class="${item.isMatch ? '' : 'cell-diff'}">${item.valB}</td>
+                    <td style="text-align: center;">
+                        <span class="diff-tag ${item.isMatch ? 'match' : 'diff'}">${item.isMatch ? '일치' : '불일치'}</span>
+                    </td>
+                `;
+                summaryTbody.appendChild(tr);
+            });
+
+            // Bank Comparison Table
+            const bankTbody = document.getElementById('compareBankTbody');
+            bankTbody.innerHTML = '';
+
+            cmp.bankCompares.forEach(bc => {
+                const tr = document.createElement('tr');
+                if (!bc.bankMatch) tr.classList.add('row-diff');
+
+                const crcA = bc.bankA ? bc.bankA.fullBankCRC : 'N/A';
+                const crcB = bc.bankB ? bc.bankB.fullBankCRC : 'N/A';
+                const trimA = bc.bankA ? bc.bankA.trimmedCRC : 'N/A';
+                const trimB = bc.bankB ? bc.bankB.trimmedCRC : 'N/A';
+                const lenA = bc.bankA ? bc.bankA.trimmedLength.toLocaleString() : 'N/A';
+                const lenB = bc.bankB ? bc.bankB.trimmedLength.toLocaleString() : 'N/A';
+
+                tr.innerHTML = `
+                    <td><strong>Bank ${bc.bankIndex}</strong></td>
+                    <td>${bc.offsetHex}</td>
+                    <td class="${bc.matchFullCRC ? '' : 'cell-diff'}">${crcA}</td>
+                    <td class="${bc.matchFullCRC ? '' : 'cell-diff'}">${crcB}</td>
+                    <td class="${bc.matchTrimmedCRC ? '' : 'cell-diff'}">${trimA}</td>
+                    <td class="${bc.matchTrimmedCRC ? '' : 'cell-diff'}">${trimB}</td>
+                    <td>${lenA} vs ${lenB} B</td>
+                    <td style="text-align: center;">
+                        <span class="diff-tag ${bc.bankMatch ? 'match' : 'diff'}">${bc.bankMatch ? '일치' : '변경됨'}</span>
+                    </td>
+                `;
+                bankTbody.appendChild(tr);
+            });
+
+            // Byte Diff Details List
+            const diffDetailsCard = document.getElementById('diffDetailsCard');
+            const diffListTbody = document.getElementById('diffListTbody');
+            diffListTbody.innerHTML = '';
+
+            if (!cmp.isIdentical && cmp.diffSampleList.length > 0) {
+                diffDetailsCard.style.display = 'flex';
+                cmp.diffSampleList.forEach(sample => {
+                    const charA = (sample.valA >= 32 && sample.valA <= 126) ? `'${String.fromCharCode(sample.valA)}'` : '.';
+                    const charB = (sample.valB >= 32 && sample.valB <= 126) ? `'${String.fromCharCode(sample.valB)}'` : '.';
+                    const hexA = '0x' + sample.valA.toString(16).padStart(2, '0').toUpperCase();
+                    const hexB = '0x' + sample.valB.toString(16).padStart(2, '0').toUpperCase();
+
+                    const tr = document.createElement('tr');
+                    tr.innerHTML = `
+                        <td>${sample.index}</td>
+                        <td style="color:var(--accent-yellow); font-weight:700;">${sample.offsetHex}</td>
+                        <td>Bank ${sample.bank}</td>
+                        <td style="color:var(--accent-blue);">${hexA} (${charA})</td>
+                        <td style="color:var(--accent-purple);">${hexB} (${charB})</td>
+                        <td style="color:var(--accent-red); font-weight:700;">${sample.diff > 0 ? '+' + sample.diff : sample.diff}</td>
+                    `;
+                    diffListTbody.appendChild(tr);
+                });
+            } else {
+                diffDetailsCard.style.display = 'none';
+            }
+        }
+
+        // Handle State Updates & UI Switching
+        function updateUIAfterStateChange() {
+            const hasA = !!state.analysisA;
+            const hasB = !!state.analysisB;
+
+            // Update Tab Button Labels and Visibility
+            if (hasA || hasB) {
+                tabsContainer.style.display = 'flex';
+            } else {
+                tabsContainer.style.display = 'none';
+                compareBanner.style.display = 'none';
+                document.querySelectorAll('.tab-content').forEach(c => c.classList.remove('active'));
+                return;
+            }
+
+            document.getElementById('tabBtnFileA').style.display = hasA ? 'inline-flex' : 'none';
+            document.getElementById('tabBtnFileB').style.display = hasB ? 'inline-flex' : 'none';
+            document.getElementById('tabBtnCompare').style.display = (hasA && hasB) ? 'inline-flex' : 'none';
+
+            if (hasA && hasB) {
+                // Both files loaded: Perform comparison!
+                state.comparison = compareBinaries(state.analysisA, state.analysisB);
+                renderComparisonUI(state.comparison, state.analysisA, state.analysisB);
+                switchTab('compare');
+                if (state.comparison.isIdentical) {
+                    showToast('✅ 두 파일이 100% 완전히 일치합니다!');
+                } else {
+                    showToast(`⚠️ 두 파일에 ${state.comparison.diffBytesCount.toLocaleString()} 바이트 차이가 있습니다.`);
+                }
+            } else if (hasA) {
+                // Only File A is loaded
+                compareBanner.style.display = 'none';
+                switchTab('fileA');
+                showToast('📁 File A 로드 완료! 비교할 2번째 BIN 파일을 드래그 & 드롭하세요.');
+            } else if (hasB) {
+                // Only File B is loaded
+                compareBanner.style.display = 'none';
+                switchTab('fileB');
+                showToast('📁 File B 로드 완료!');
+            }
+        }
+
+        // File Selection & Analysis Handler
+        function handleFileSelect(slot, file) {
             progressWrapper.style.display = 'block';
-            resultsContainer.style.display = 'none';
-            progressBarFill.style.width = '0%';
-            progressStatus.innerText = '파일 읽는 중...';
-            progressPercent.innerText = '0%';
-
-            const fname = file.name;
-            const fileSize = file.size;
-
-            // Fill Metadata
-            document.getElementById('metaFileName').innerText = fname;
-            document.getElementById('metaFileSize').innerText = formatBytes(fileSize);
-            document.getElementById('metaFileDate').innerText = new Date(file.lastModified).toLocaleString('ko-KR');
+            progressBarFill.style.width = '10%';
+            progressStatus.innerText = `[File ${slot}] 파일 읽는 중...`;
+            progressPercent.innerText = '10%';
 
             const reader = new FileReader();
 
             reader.onprogress = (e) => {
                 if (e.lengthComputable) {
-                    const pct = Math.round((e.loaded / e.total) * 100);
+                    const pct = Math.round((e.loaded / e.total) * 90);
                     progressBarFill.style.width = pct + '%';
                     progressPercent.innerText = pct + '%';
                 }
             };
 
             reader.onload = async (evt) => {
-                progressStatus.innerText = '뱅크 분할 및 첵섬 분석 중...';
+                progressStatus.innerText = `[File ${slot}] 뱅크 분할 및 첵섬 분석 중...`;
                 progressBarFill.style.width = '95%';
                 progressPercent.innerText = '95%';
 
                 setTimeout(async () => {
                     const buffer = evt.target.result;
-                    const bytes = new Uint8Array(buffer);
+                    const analysis = await analyzeBinaryBuffer(buffer, file);
 
-                    // 1. Total Unsigned 32-bit Byte Sum
-                    let totalSum = 0;
-                    let wordSum16 = 0;
-                    for (let i = 0; i < bytes.length; i++) {
-                        totalSum = (totalSum + bytes[i]) >>> 0;
+                    if (slot === 'A') {
+                        state.fileA = file;
+                        state.analysisA = analysis;
+                        dropSlotA.classList.add('loaded');
+                        document.getElementById('slotATitle').innerText = file.name;
+                        document.getElementById('slotAName').innerText = file.name;
+                        document.getElementById('slotAMeta').innerText = `${formatBytes(file.size)} | v3.8: ${analysis.sum32Formatted.split(' ')[0]} ${analysis.sum32Formatted.split(' ')[1]}`;
+                        renderSingleFileDetails('A', analysis);
+                    } else {
+                        state.fileB = file;
+                        state.analysisB = analysis;
+                        dropSlotB.classList.add('loaded');
+                        document.getElementById('slotBTitle').innerText = file.name;
+                        document.getElementById('slotBName').innerText = file.name;
+                        document.getElementById('slotBMeta').innerText = `${formatBytes(file.size)} | v3.8: ${analysis.sum32Formatted.split(' ')[0]} ${analysis.sum32Formatted.split(' ')[1]}`;
+                        renderSingleFileDetails('B', analysis);
                     }
 
-                    // 16-bit Word Sum
-                    for (let i = 0; i < bytes.length - 1; i += 2) {
-                        const word = (bytes[i + 1] << 8) | bytes[i];
-                        wordSum16 = (wordSum16 + word) & 0xFFFF;
-                    }
-
-                    const h = ((totalSum >>> 16) & 0xFFFF).toString(16).padStart(4, '0').toUpperCase();
-                    const l = (totalSum & 0xFFFF).toString(16).padStart(4, '0').toUpperCase();
-                    const hex32 = totalSum.toString(16).padStart(8, '0').toUpperCase();
-
-                    // Card 1. RTD Customer Tool V3.8 Full Bank Checksum
-                    const sum32Formatted = `${h} ${l} (0x${hex32})`;
-                    document.getElementById('sum32ChecksumVal').innerText = sum32Formatted;
-                    document.getElementById('sum32High').innerText = '0x' + h;
-                    document.getElementById('sum32Low').innerText = '0x' + l;
-
-                    // Card 2. Bank-by-Bank (64KB = 65536 bytes) Breakdown & RTDTool v3.1.3 Trimmed Checksum
-                    const BANK_SIZE = 65536;
-                    const numBanks = Math.max(1, Math.ceil(bytes.length / BANK_SIZE));
-                    const bankTableBody = document.getElementById('bankTableBody');
-                    bankTableBody.innerHTML = '';
-
-                    let trimmedTotalSum = 0;
-                    let trimmedTotalBytesCount = 0;
-
-                    for (let b = 0; b < numBanks; b++) {
-                        const start = b * BANK_SIZE;
-                        const end = Math.min(bytes.length, (b + 1) * BANK_SIZE);
-                        const bankBytes = bytes.subarray(start, end);
-
-                        // Full Bank 8-bit CRC & 32-bit Sum
-                        let fullBankSum32 = 0;
-                        for (let i = 0; i < bankBytes.length; i++) {
-                            fullBankSum32 = (fullBankSum32 + bankBytes[i]) >>> 0;
-                        }
-                        const fullBankCRC = (fullBankSum32 & 0xFF).toString(16).padStart(2, '0').toUpperCase();
-
-                        // Trimmed Active Code (v3.1.3)
-                        const trimmedLen = findTrimmedLength(bankBytes);
-                        let trimmedBankSum32 = 0;
-                        for (let i = 0; i < trimmedLen; i++) {
-                            trimmedBankSum32 = (trimmedBankSum32 + bankBytes[i]) >>> 0;
-                        }
-                        const trimmedCRC = (trimmedBankSum32 & 0xFF).toString(16).padStart(2, '0').toUpperCase();
-
-                        trimmedTotalSum = (trimmedTotalSum + trimmedBankSum32) >>> 0;
-                        trimmedTotalBytesCount += trimmedLen;
-
-                        const offsetStr = '0x' + start.toString(16).padStart(5, '0').toUpperCase();
-                        const tr = document.createElement('tr');
-                        tr.innerHTML = `
-                            <td><strong>Bank ${b}</strong></td>
-                            <td>${offsetStr}</td>
-                            <td class="bank-badge-len">${bankBytes.length.toLocaleString()} B</td>
-                            <td><span class="bank-badge-crc">${fullBankCRC}</span></td>
-                            <td style="color: var(--accent-cyan); font-weight: 600;">${trimmedLen.toLocaleString()} B</td>
-                            <td><span class="bank-badge-crc" style="color: var(--accent-purple); border-color: rgba(192,132,252,0.3); background: rgba(192,132,252,0.1);">${trimmedCRC}</span></td>
-                            <td>0x${fullBankSum32.toString(16).padStart(8, '0').toUpperCase()}</td>
-                        `;
-                        bankTableBody.appendChild(tr);
-                    }
-
-                    // RTDTool 3.1.3 Trimmed Checksum
-                    const th = ((trimmedTotalSum >>> 16) & 0xFFFF).toString(16).padStart(4, '0').toUpperCase();
-                    const tl = (trimmedTotalSum & 0xFFFF).toString(16).padStart(4, '0').toUpperCase();
-                    const trimmedHex32 = trimmedTotalSum.toString(16).padStart(8, '0').toUpperCase();
-                    document.getElementById('trimmedChecksumVal').innerText = `${th} ${tl} (0x${trimmedHex32})`;
-                    document.getElementById('trimmedTotalLen').innerText = trimmedTotalBytesCount.toLocaleString();
-
-                    // Standard Checksums
-                    const crc32Val = calculateCRC32(bytes);
-                    document.getElementById('crc32Val').innerText = '0x' + crc32Val;
-                    document.getElementById('sum16Val').innerText = '0x' + wordSum16.toString(16).padStart(4, '0').toUpperCase();
-
-                    // MD5 & SHA-256
-                    const md5Val = calculateMD5(bytes);
-                    document.getElementById('md5Val').innerText = md5Val;
-
-                    try {
-                        const cryptoSubtle = window.crypto.subtle;
-                        if (cryptoSubtle) {
-                            const hashBuffer = await cryptoSubtle.digest('SHA-256', buffer);
-                            const hashArray = Array.from(new Uint8Array(hashBuffer));
-                            const sha256Hex = hashArray.map(b => b.toString(16).padStart(2, '0')).join('').toUpperCase();
-                            document.getElementById('sha256Val').innerText = sha256Hex;
-                        } else {
-                            document.getElementById('sha256Val').innerText = 'N/A';
-                        }
-                    } catch (err) {
-                        document.getElementById('sha256Val').innerText = 'N/A';
-                    }
-
-                    // Metadata & Hex Dump
-                    document.getElementById('metaFileType').innerText = detectHeaderSignature(bytes);
-                    document.getElementById('hexDumpText').innerText = generateHexDump(bytes, 256);
-
-                    // Finish progress & reveal results
                     progressBarFill.style.width = '100%';
                     progressPercent.innerText = '100%';
                     setTimeout(() => {
                         progressWrapper.style.display = 'none';
-                        resultsContainer.style.display = 'flex';
-                        showToast('✅ 뱅크 분할 및 듀얼 첵섬 분석 완료!');
-                    }, 200);
-
-                }, 50);
+                        updateUIAfterStateChange();
+                    }, 150);
+                }, 40);
             };
 
             reader.onerror = () => {
-                progressStatus.innerText = '파일 읽기 오류!';
+                progressWrapper.style.display = 'none';
                 showToast('❌ 파일 읽기 오류가 발생했습니다.');
             };
 
             reader.readAsArrayBuffer(file);
         }
 
-        // Test sample bin button handler
-        function loadSampleFile(e) {
-            e.stopPropagation();
-            // Generate sample 256KB Realtek FW binary matching user screenshot (0x025A4423)
-            const sampleName = "DH9_FW1_06_DLC1010BCP42LF-0x025A4423.bin";
-            const dummyBytes = new Uint8Array(262144); // 256KB
-            
-            // Build sample bank data
-            for (let i = 0; i < dummyBytes.length; i++) {
-                dummyBytes[i] = (i * 37 + 13) & 0xFF;
+        // Test sample generation for 100% identical or different scenarios
+        function loadSampleScenario(scenario) {
+            const sampleNameA = "DH9_FW1_06_DLC1010BCP42LF-0x025A4423.bin";
+            const dummyBytesA = new Uint8Array(262144); // 256KB
+            for (let i = 0; i < dummyBytesA.length; i++) {
+                dummyBytesA[i] = (i * 37 + 13) & 0xFF;
             }
-            
-            // Adjust last few bytes so byte sum matches exactly 39,470,115 (0x025A4423)
+            // Tail adjustment to match 0x025A4423 (39470115)
             let currentSum = 0;
-            for (let i = 0; i < dummyBytes.length - 4; i++) {
-                currentSum = (currentSum + dummyBytes[i]) >>> 0;
+            for (let i = 0; i < dummyBytesA.length - 4; i++) {
+                currentSum = (currentSum + dummyBytesA[i]) >>> 0;
             }
-            const targetSum = 39470115;
-            let diff = targetSum - currentSum;
+            let diff = 39470115 - currentSum;
             for (let i = 0; i < 4; i++) {
                 let part = Math.min(255, Math.max(0, diff));
-                dummyBytes[dummyBytes.length - 4 + i] = part;
+                dummyBytesA[dummyBytesA.length - 4 + i] = part;
                 diff -= part;
             }
 
-            const blob = new Blob([dummyBytes], { type: 'application/octet-stream' });
-            const sampleFile = new File([blob], sampleName, { lastModified: Date.now() });
-            processFile(sampleFile);
+            const blobA = new Blob([dummyBytesA], { type: 'application/octet-stream' });
+            const fileA = new File([blobA], sampleNameA, { lastModified: Date.now() });
+
+            let fileB;
+            if (scenario === 'identical') {
+                const blobB = new Blob([dummyBytesA], { type: 'application/octet-stream' });
+                fileB = new File([blobB], "DH9_FW1_06_DLC1010BCP42LF-0x025A4423_COPY.bin", { lastModified: Date.now() });
+            } else {
+                // Modified version for Bank 1 (Offset 0x10040)
+                const dummyBytesB = new Uint8Array(dummyBytesA);
+                dummyBytesB[0x10040] = 0xAA;
+                dummyBytesB[0x10041] = 0xBB;
+                dummyBytesB[0x10042] = 0xCC;
+                dummyBytesB[0x20050] = 0x55;
+                const blobB = new Blob([dummyBytesB], { type: 'application/octet-stream' });
+                fileB = new File([blobB], "DH9_FW1_07_MODIFIED_DIFF.bin", { lastModified: Date.now() });
+            }
+
+            handleFileSelect('A', fileA);
+            setTimeout(() => {
+                handleFileSelect('B', fileB);
+            }, 200);
         }
     </script>
 </body>
